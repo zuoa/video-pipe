@@ -135,7 +135,7 @@ CI 使用内置 `GITHUB_TOKEN`（`packages: write`），无需额外密钥。首
 
 ```bash
 # 编译 + 静态检查 + 单元测试
-docker run --rm -v "$PWD":/src -w /src golang:1.22-alpine \
+docker run --rm -v "$PWD":/src -w /src golang:1.25-alpine \
   sh -c 'go mod tidy && go vet ./... && go test ./...'
 
 # 从源码本地构建镜像（部署请直接用 CI 产物 + docker compose pull）
