@@ -35,6 +35,8 @@ services:
       MEDIAMTX_USER: "wrapper"               # must match authInternalUsers in mediamtx.yml
       MEDIAMTX_PASS: "change-me"
       PLAYBACK_HOST: "${PLAYBACK_HOST:-localhost}"  # override in .env; host browsers use to reach MediaMTX
+      UPLOAD_DIR: "/data/uploads"            # uploaded source files (under mounted ./data)
+      UPLOAD_MAX_BYTES: "${UPLOAD_MAX_BYTES:-0}"  # single-upload size cap; 0 = unlimited
     ports:
       - "8080:8080"
     volumes:

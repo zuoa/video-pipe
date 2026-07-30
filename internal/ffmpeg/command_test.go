@@ -20,10 +20,9 @@ func TestBuildArgs_Common(t *testing.T) {
 		{"rtmp", stream(model.SourceRTMP, "rtmp://host/live/k")},
 		{"http", stream(model.SourceHTTP, "https://host/v.m3u8")},
 		{"file", stream(model.SourceFile, "/data/a.mp4")},
-		{"test", stream(model.SourceTest, "")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := BuildArgs(tc.s, "mediamtx")
+			args := BuildArgs(tc.s, "mediamtx", "", nil)
 			joined := strings.Join(args, " ")
 			checks := map[string]bool{
 				"has -loglevel warning":  containsPair(args, "-loglevel", "warning"),
@@ -43,21 +42,21 @@ func TestBuildArgs_Common(t *testing.T) {
 }
 
 func TestBuildArgs_FileHasRealtimeFlag(t *testing.T) {
-	args := BuildArgs(stream(model.SourceFile, "/data/a.mp4"), "mediamtx")
+	args := BuildArgs(stream(model.SourceFile, "/data/a.mp4"), "mediamtx", "", nil)
 	if !contains(args, "-re") {
 		t.Errorf("file source must pace with -re; got %v", args)
 	}
 }
 
 func TestBuildArgs_LiveHasNoRealtimeFlag(t *testing.T) {
-	args := BuildArgs(stream(model.SourceRTSP, "rtsp://x"), "mediamtx")
+	args := BuildArgs(stream(model.SourceRTSP, "rtsp://x"), "mediamtx", "", nil)
 	if contains(args, "-re") {
 		t.Errorf("live RTSP source should not set -re; got %v", args)
 	}
 }
 
 func TestBuildArgs_RTSPTransportBeforeInput(t *testing.T) {
-	args := BuildArgs(stream(model.SourceRTSP, "rtsp://cam/stream"), "mediamtx")
+	args := BuildArgs(stream(model.SourceRTSP, "rtsp://cam/stream"), "mediamtx", "", nil)
 	i := indexOf(args, "-i")
 	rt := indexOf(args, "-rtsp_transport")
 	if rt == -1 || rt > i || i == -1 {
@@ -66,7 +65,7 @@ func TestBuildArgs_RTSPTransportBeforeInput(t *testing.T) {
 }
 
 func TestBuildArgs_MapsSingleVideoAndAudio(t *testing.T) {
-	args := BuildArgs(stream(model.SourceRTSP, "rtsp://cam/stream"), "mediamtx")
+	args := BuildArgs(stream(model.SourceRTSP, "rtsp://cam/stream"), "mediamtx", "", nil)
 	if !containsPair(args, "-map", "0:v:0?") {
 		t.Errorf("must optionally map first video (-map 0:v:0?); got %v", args)
 	}
@@ -79,6 +78,24 @@ func TestBuildArgs_MapsSingleVideoAndAudio(t *testing.T) {
 	cv := indexOf(args, "-c:v")
 	if i == -1 || m == -1 || cv == -1 || !(i < m && m < cv) {
 		t.Errorf("expected -i < -map < -c:v; got i=%d map=%d cv=%d args=%v", i, m, cv, args)
+	}
+}
+
+func TestBuildArgs_TestSourceEncodesToH264(t *testing.T) {
+	args := BuildArgs(stream(model.SourceTest, ""), "mediamtx", "", nil)
+	joined := strings.Join(args, " ")
+	checks := map[string]bool{
+		"encodes video to h264": containsPair(args, "-c:v", "libx264"),
+		"no audio (-an)":        contains(args, "-an"),
+		"does not copy video":   !containsPair(args, "-c:v", "copy"),
+		"does not copy audio":   !containsPair(args, "-c:a", "copy"),
+		"hue cycles over time":  strings.Contains(joined, "hue=h=45*t"),
+		"target path present":   strings.Contains(joined, "rtsp://mediamtx:8554/cam1"),
+	}
+	for label, ok := range checks {
+		if !ok {
+			t.Errorf("test source: %s\n  args: %v", label, args)
+		}
 	}
 }
 

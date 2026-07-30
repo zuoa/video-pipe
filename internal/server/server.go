@@ -54,6 +54,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /", s.index)
 	mux.HandleFunc("GET /api/streams", s.listStreams)
 	mux.HandleFunc("POST /api/streams", s.createStream)
+	mux.HandleFunc("POST /api/uploads", s.uploadFile)
 	mux.HandleFunc("GET /api/streams/{name}/urls", s.streamURLs)
 	mux.HandleFunc("GET /api/streams/{name}/status", s.streamStatus)
 	mux.HandleFunc("POST /api/streams/{name}/start", s.startStream)

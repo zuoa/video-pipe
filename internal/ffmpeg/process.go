@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"video-pipe/internal/model"
 )
 
 // State is the lifecycle state of a managed stream.
@@ -54,12 +56,19 @@ const (
 	exitFail                 // error — retry with backoff
 )
 
+// Resolver returns a fresh direct media URL + headers for a provider source,
+// invoked before every (re)start so expiring live URLs are refreshed. Returns
+// Live=true for never-ending streams. A nil Resolver means a direct source that
+// uses the stream's own SourceURL (no resolution).
+type Resolver func(ctx context.Context) (url string, headers map[string]string, live bool, err error)
+
 // Handle supervises a single ffmpeg subprocess for one stream.
 type Handle struct {
-	name   string
-	live   bool
-	args   []string
-	logger *slog.Logger
+	name    string
+	stream  model.Stream
+	mtxHost string
+	resolve Resolver // nil for direct sources
+	logger  *slog.Logger
 
 	mu            sync.RWMutex
 	state         State
@@ -72,12 +81,15 @@ type Handle struct {
 	lastOut atomic.Int64 // unix-nano timestamp of the last `progress=continue`
 }
 
-// NewHandle creates a supervisor for a stream.
-func NewHandle(name string, live bool, args []string, logger *slog.Logger) *Handle {
+// NewHandle creates a supervisor for a stream. resolve may be nil for a direct
+// (non-provider) source; otherwise it is called before each (re)start to refresh
+// the resolved media URL.
+func NewHandle(name string, stream model.Stream, mtxHost string, resolve Resolver, logger *slog.Logger) *Handle {
 	return &Handle{
 		name:          name,
-		live:          live,
-		args:          args,
+		stream:        stream,
+		mtxHost:       mtxHost,
+		resolve:       resolve,
 		logger:        logger,
 		state:         StateRestarting,
 		lastHeartbeat: time.Now(),
@@ -97,7 +109,19 @@ func (h *Handle) Run(ctx context.Context) {
 		h.setState(StateRestarting)
 
 		procCtx, procCancel := context.WithCancel(ctx)
-		cmd, startedAt, err := h.start(procCtx)
+
+		args, live, err := h.buildArgs(procCtx)
+		if err != nil {
+			procCancel()
+			h.setLastError("resolve: " + err.Error())
+			h.logger.Warn("resolve failed", "err", err)
+			if !h.retry(ctx, &restarts) {
+				return
+			}
+			continue
+		}
+
+		cmd, startedAt, err := h.start(procCtx, args)
 		if err != nil {
 			procCancel()
 			h.setLastError(err.Error())
@@ -122,7 +146,7 @@ func (h *Handle) Run(ctx context.Context) {
 		switch {
 		case ctx.Err() != nil:
 			return // service shutdown / user stop
-		case classify(waitErr) == exitOK && !h.live:
+		case classify(waitErr) == exitOK && !live:
 			h.logger.Info("source ended cleanly; stopping", "source", h.name)
 			return // file finished — do not loop forever
 		case time.Since(startedAt) >= healthyRunFor:
@@ -155,10 +179,26 @@ func (h *Handle) retry(ctx context.Context, restarts *int) bool {
 	return true
 }
 
+// buildArgs produces the ffmpeg args for one run. For provider sources it calls
+// the resolver first (each run, so expiring live URLs refresh) under a timeout;
+// for direct sources it builds args once from the stored stream.
+func (h *Handle) buildArgs(ctx context.Context) ([]string, bool, error) {
+	if h.resolve == nil {
+		return BuildArgs(h.stream, h.mtxHost, "", nil), h.stream.Live, nil
+	}
+	resCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	url, headers, live, err := h.resolve(resCtx)
+	if err != nil {
+		return nil, false, err
+	}
+	return BuildArgs(h.stream, h.mtxHost, url, headers), live, nil
+}
+
 // start launches the ffmpeg process in its own process group and wires the
 // progress/stderr pipe readers.
-func (h *Handle) start(ctx context.Context) (*exec.Cmd, time.Time, error) {
-	cmd := exec.CommandContext(ctx, "ffmpeg", h.args...)
+func (h *Handle) start(ctx context.Context, args []string) (*exec.Cmd, time.Time, error) {
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	// Isolate ffmpeg (+ any children) in their own process group so we can kill
 	// the whole group cleanly on stop/shutdown.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

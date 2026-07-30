@@ -12,6 +12,7 @@ import (
 	"video-pipe/internal/ffmpeg"
 	"video-pipe/internal/mediamtx"
 	"video-pipe/internal/model"
+	"video-pipe/internal/provider"
 	"video-pipe/internal/store"
 )
 
@@ -126,8 +127,26 @@ func (m *Manager) HandleSnapshot(name string) (ffmpeg.Status, bool) {
 func (m *Manager) start(ctx context.Context, s model.Stream) bool {
 	m.stop(s.Name) // ensure no stale handle for this name
 
-	args := ffmpeg.BuildArgs(s, m.mtxHost)
-	h := ffmpeg.NewHandle(s.Name, s.Live, args, m.log.With("stream", s.Name))
+	// For provider sources, build a resolver that refreshes the CDN URL before
+	// every (re)start. Direct sources pass nil (they use s.SourceURL directly).
+	var resolve ffmpeg.Resolver
+	if s.Provider != "" {
+		r, ok := provider.Get(s.Provider)
+		if !ok {
+			m.log.Error("manager: unknown provider", "stream", s.Name, "provider", s.Provider)
+			return false
+		}
+		pageURL := s.SourceURL
+		resolve = func(c context.Context) (string, map[string]string, bool, error) {
+			res, err := r.Resolve(c, pageURL)
+			if err != nil {
+				return "", nil, false, err
+			}
+			return res.URL, res.Headers, res.Live, nil
+		}
+	}
+
+	h := ffmpeg.NewHandle(s.Name, s, m.mtxHost, resolve, m.log.With("stream", s.Name))
 
 	hctx, cancel := context.WithCancel(ctx)
 	e := &entry{handle: h, stream: s, cancel: cancel, done: make(chan struct{})}

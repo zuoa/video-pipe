@@ -79,6 +79,7 @@ button.danger:hover { background: rgba(231, 76, 60, 0.15); }
 
 .msg { min-height: 18px; margin: 10px 0 0; font-size: 13px; }
 .msg.err { color: var(--red); }
+.msg.ok { color: var(--green); }
 
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }

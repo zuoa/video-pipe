@@ -5,6 +5,72 @@ const body = document.getElementById("streams-body");
 const form = document.getElementById("create-form");
 const formMsg = document.getElementById("form-msg");
 
+// Source UI: a provider (B站/斗鱼) takes a page/room URL; "直连" uses the
+// source_type + URL (or file upload) flow.
+const providerEl = document.getElementById("provider");
+const srcType = document.getElementById("source-type");
+const sourceTypeWrap = document.getElementById("source-type-wrap");
+const srcUrl = document.getElementById("source-url");
+const srcUrlWrap = document.getElementById("source-url-wrap");
+const srcUrlLabel = srcUrlWrap.querySelector("span");
+const srcFileWrap = document.getElementById("source-file-wrap");
+const srcFile = document.getElementById("source-file");
+const uploadBtn = document.getElementById("upload-btn");
+const uploadStatus = document.getElementById("upload-status");
+
+function syncSourceUI() {
+  const usingProvider = providerEl.value !== "";
+  const isFile = srcType.value === "file";
+
+  sourceTypeWrap.hidden = usingProvider;        // provider ignores source_type
+  srcFileWrap.hidden = usingProvider || !isFile; // upload only for direct file
+  srcUrlWrap.hidden = !usingProvider && isFile;  // url hidden only for direct file
+
+  if (usingProvider) {
+    srcUrlLabel.textContent = providerEl.value === "douyu" ? "斗鱼房间地址" : "B站视频/直播地址";
+    srcUrl.placeholder = providerEl.value === "douyu"
+      ? "如 https://www.douyu.com/12345"
+      : "如 https://www.bilibili.com/video/BV… 或 live.bilibili.com/<房间>";
+  } else {
+    srcUrlLabel.textContent = "输入源地址";
+    srcUrl.placeholder = "rtsp://… / rtmp://… / http://…（test 留空；file 请改用上传）";
+  }
+  srcUrl.value = ""; // changing source invalidates the previous entry
+  uploadStatus.textContent = "";
+  uploadStatus.className = "msg";
+}
+providerEl.addEventListener("change", syncSourceUI);
+srcType.addEventListener("change", syncSourceUI);
+syncSourceUI();
+
+uploadBtn.addEventListener("click", () => srcFile.click());
+
+srcFile.addEventListener("change", async () => {
+  const file = srcFile.files[0];
+  if (!file) return;
+  uploadStatus.textContent = "上传中…";
+  uploadStatus.className = "msg";
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const res = await fetch("/api/uploads", { method: "POST", body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    srcUrl.value = data.path; // hidden holder the submit handler reads
+    uploadStatus.textContent = `${file.name}（${formatSize(data.size)}）已就绪`;
+    uploadStatus.className = "msg ok";
+  } catch (e) {
+    uploadStatus.textContent = "上传失败：" + e.message;
+    uploadStatus.className = "msg err";
+  }
+});
+
+function formatSize(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1048576).toFixed(1) + " MB";
+}
+
 async function api(method, path, payload) {
   const opts = { method, headers: {} };
   if (payload !== undefined) {
@@ -20,6 +86,12 @@ async function api(method, path, payload) {
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function typeLabel(s) {
+  if (s.provider === "bilibili") return "B站";
+  if (s.provider === "douyu") return "斗鱼(实验)";
+  return esc(s.source_type);
 }
 
 function statusBadge(s) {
@@ -58,7 +130,7 @@ function render(streams) {
       return `<tr>
         <td>${statusBadge(s)}</td>
         <td class="mono">${name}</td>
-        <td>${esc(s.source_type)}</td>
+        <td>${typeLabel(s)}</td>
         <td class="src" title="${esc(s.source_url)}">${esc(s.source_url || "(test pattern)")}</td>
         <td>${s.restart_count}</td>
         <td>${s.readers}</td>
@@ -147,10 +219,17 @@ form.addEventListener("submit", async (e) => {
     name: fd.get("name"),
     source_url: fd.get("source_url"),
     source_type: fd.get("source_type"),
+    provider: fd.get("provider") || "",
   };
+  if (!payload.provider && payload.source_type === "file" && !payload.source_url) {
+    formMsg.textContent = "请先选择并上传文件";
+    formMsg.className = "msg err";
+    return;
+  }
   try {
     await api("POST", "/api/streams", payload);
     form.reset();
+    syncSourceUI();
     toast("已创建并启动");
     await refresh();
   } catch (err) {

@@ -41,6 +41,12 @@ func main() {
 	}
 	defer st.Close()
 
+	// Ensure the upload directory exists (under the mounted /data volume).
+	if err := os.MkdirAll(cfg.UploadDir, 0o755); err != nil {
+		log.Error("upload dir create failed", "dir", cfg.UploadDir, "err", err)
+		os.Exit(1)
+	}
+
 	mtxClient := mediamtx.New(cfg.MediaMTXAPI, cfg.MediaMTXUser, cfg.MediaMTXPass)
 	mgr := manager.New(st, mtxClient, cfg.MediaMTXHost, log)
 	if err := mgr.Start(ctx); err != nil {

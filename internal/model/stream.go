@@ -27,6 +27,19 @@ const (
 // ValidSourceTypes are the source types a user may select.
 var ValidSourceTypes = []string{SourceAuto, SourceFile, SourceRTSP, SourceRTMP, SourceHTTP, SourceTest}
 
+// ValidProviders are the optional source-URL resolvers ("" = direct URL, no resolution).
+var ValidProviders = []string{"", "bilibili", "douyu"}
+
+// IsValidProvider reports whether p is a valid (or empty) provider.
+func IsValidProvider(p string) bool {
+	for _, v := range ValidProviders {
+		if v == p {
+			return true
+		}
+	}
+	return false
+}
+
 // nameRe constrains stream names: they become a MediaMTX path and an ffmpeg
 // output URL segment, so they must be URL-safe slugs.
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -51,6 +64,7 @@ type Stream struct {
 	Name         string    `json:"name"`
 	SourceURL    string    `json:"source_url"`
 	SourceType   string    `json:"source_type"`
+	Provider     string    `json:"provider"` // optional URL resolver: "", "bilibili", "douyu"
 	Live         bool      `json:"live"`
 	DesiredState string    `json:"desired_state"`
 	CreatedAt    time.Time `json:"created_at"`

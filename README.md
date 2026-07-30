@@ -44,7 +44,7 @@
 - 管理界面：<http://localhost:8080>
 - MediaMTX 控制 API：<http://localhost:9997>
 
-**冒烟测试（无需任何外部视频源）**：打开管理界面，名称填 `demo`，类型选 `test`，地址留空，点"创建并启动"。约 5 秒内状态灯变绿（在线），即可复制各协议地址到 VLC / Safari 验证：
+**冒烟测试（无需任何外部视频源）**：打开管理界面，名称填 `demo`，类型选 `test`（地址留空），点"创建并启动"。`test` 源是一路色相循环的 H.264 测试图（颜色随时间变化，便于确认画面是"活的"），约 5 秒内状态灯变绿（在线），即可复制各协议地址到 VLC / Safari 验证：
 
 | 协议 | 地址（path=`demo`） |
 |---|---|
@@ -54,7 +54,19 @@
 | WebRTC | `http://localhost:8889/demo`（浏览器打开） |
 | SRT   | `srt://localhost:8890?streamid=#!::m=request,r=demo` |
 
-接入真实摄像头：类型选 `auto` 或 `rtsp`，地址填 `rtsp://user:pass@ip:554/...`。本地文件：类型选 `auto` 或 `file`，地址填容器内路径（挂载到 `./data`，如 `/data/sample.mp4`）。
+> 没有 FLV：MediaMTX 不输出 FLV，以上 5 种即全部；浏览器播放用 HLS 或 WebRTC。播放地址里的主机名由 `PLAYBACK_HOST` 决定——本机访问用 `localhost` 即可，远程/LAN 访问请在 `.env` 里把它改成服务器 IP 或域名。
+
+接入真实摄像头：类型选 `auto` 或 `rtsp`，地址填 `rtsp://user:pass@ip:554/...`。本地文件：类型选 `file`，点"选择文件上传…"把视频传上来（落到挂载的 `./data/uploads/`），无需手填路径。
+
+**视频/直播站点（provider）**：来源选 `B站`，地址填 B站视频页（`https://www.bilibili.com/video/BV…`）或直播间（`https://live.bilibili.com/<房间>`）；来源选 `斗鱼(实验)`，地址填 `https://www.douyu.com/<房间号>`。后端会自动把页面/房间地址解析成 CDN 直链再转封装：
+
+- B站解析复用 [synctv-org/vendors](https://github.com/synctv-org/vendors) 库（含 WBI 签名）；**斗鱼为实验性自研解析**（依赖站点的 `sign` 算法，可能随站点改版失效，需按真实房间联调）。
+- 未带登录 cookie，只能拿到公开清晰度（通常标清/流畅）；HD/会员内容暂不可用。
+- 直播直链会过期，断流/重启时会自动重新解析。
+
+## 输出协议（可选）
+
+MediaMTX 对每个流默认开 RTSP/RTMP/HLS/WebRTC/SRT 全部 5 种。设置环境变量 `ENABLE_RTSP` / `ENABLE_RTMP` / `ENABLE_HLS` / `ENABLE_WEBRTC` / `ENABLE_SRT` 为 `0`/`false`/`no` 可让 UI/API **不再展示**该协议的播放地址（默认全开）。要真正在 MediaMTX 侧关闭某协议（省资源/更干净），还需在 `mediamtx.yml` 里把该协议设为 `no`（如 `hls: no`、`webrtc: no`），并取消 `docker-compose.yml` 里对应端口的发布。
 
 ## 配置（环境变量）
 
@@ -67,7 +79,10 @@
 | `MEDIAMTX_API` | `http://mediamtx:9997` | MediaMTX 控制 API（容器内） |
 | `MEDIAMTX_HOST` | `mediamtx` | ffmpeg 推流目标主机（容器内） |
 | `MEDIAMTX_USER` / `MEDIAMTX_PASS` | `wrapper` / `change-me` | 控制 API Basic Auth（须与 `mediamtx.yml` 的 `authInternalUsers` 一致） |
-| `PLAYBACK_HOST` | `localhost` | **浏览器**访问 MediaMTX 的主机名，用于拼播放地址（容器内地址浏览器不可达，必须改为对外可达地址） |
+| `PLAYBACK_HOST` | `localhost` | **浏览器**访问 MediaMTX 的主机名，用于拼播放地址（容器内地址浏览器不可达，远程访问必须改为对外可达地址；可在 `.env` 覆盖） |
+| `UPLOAD_DIR` | `/data/uploads` | 上传文件存放目录（挂载到宿主 `./data/uploads`） |
+| `UPLOAD_MAX_BYTES` | `0` | 单个上传文件大小上限（字节），`0` 表示不限。超出返回 413 |
+| `ENABLE_RTSP` / `ENABLE_RTMP` / `ENABLE_HLS` / `ENABLE_WEBRTC` / `ENABLE_SRT` | 全部启用 | 是否在 UI/API 展示对应协议的播放地址（`0`/`false`/`no` 关闭）。配合 `mediamtx.yml` 的 `xxx: no` 可真正关闭该协议 |
 
 > 生产部署：把 `PLAYBACK_HOST` 改成对外域名/IP；如需对外暴露，按需在 `docker-compose.yml` 发布端口。
 
@@ -76,7 +91,8 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET`  | `/api/streams` | 列出所有流（含状态、播放地址） |
-| `POST` | `/api/streams` | 新增并启动一路流。Body：`{name, source_url, source_type}` |
+| `POST` | `/api/streams` | 新增并启动一路流。Body：`{name, source_url, source_type, provider?}`（`provider` 可选：`bilibili`/`douyu`，此时 `source_url` 填页面/房间地址） |
+| `POST` | `/api/uploads` | 上传源文件（multipart `file` 字段），返回 `{path, name, size}`；`path` 可作为 `/api/streams` 的 `source_url`（落盘到 `UPLOAD_DIR`） |
 | `GET`  | `/api/streams/{name}/urls` | 返回该流各协议播放地址 |
 | `GET`  | `/api/streams/{name}/status` | 单流状态 |
 | `POST` | `/api/streams/{name}/start` | 启动一路已停止/出错的流 |
@@ -111,7 +127,7 @@ internal/server/               HTTP API + html/template UI（templates/、static
 mediamtx.yml                   MediaMTX 配置（开启 Control API + wrapper 鉴权）
 Dockerfile                     镜像构建（CI 用）
 docker-compose.yml             部署编排：拉取预构建镜像（pull，不 build）
-.env.example                   镜像地址配置模板（VIDEOPIPE_IMAGE）
+.env.example                   部署配置模板（VIDEOPIPE_IMAGE、PLAYBACK_HOST、UPLOAD_MAX_BYTES）
 .github/workflows/ci.yml       CI：test + 构建并推送镜像到 GHCR
 ```
 

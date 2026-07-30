@@ -24,15 +24,30 @@
 						placeholder="如 cam01（小写字母/数字/-/_）">
 				</label>
 				<label>
+					<span>来源</span>
+					<select name="provider" id="provider">
+						<option value="">直连</option>
+						<option value="bilibili">B站</option>
+						<option value="douyu">斗鱼(实验)</option>
+					</select>
+				</label>
+				<label id="source-type-wrap">
 					<span>类型</span>
-					<select name="source_type">
+					<select name="source_type" id="source-type">
 						{{range .SourceTypes}}<option value="{{.}}">{{.}}</option>{{end}}
 					</select>
 				</label>
-				<label class="grow">
+				<label class="grow" id="source-url-wrap">
 					<span>输入源地址</span>
-					<input name="source_url" placeholder="rtsp://… / rtmp://… / http://… / /data/x.mp4（test 类型留空）">
+					<input name="source_url" id="source-url"
+						placeholder="rtsp://… / rtmp://… / http://…（test 留空；file 请改用上传）">
 				</label>
+				<label class="grow" id="source-file-wrap" hidden>
+					<span>源文件</span>
+					<button type="button" id="upload-btn">选择文件上传…</button>
+					<span id="upload-status" class="msg" style="margin:0"></span>
+				</label>
+				<input type="file" id="source-file" accept="video/*" hidden>
 				<button type="submit">创建并启动</button>
 			</form>
 			<p id="form-msg" class="msg"></p>

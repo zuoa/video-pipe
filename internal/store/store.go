@@ -51,11 +51,37 @@ func (s *Store) migrate() error {
 		name          TEXT    NOT NULL UNIQUE,
 		source_url    TEXT    NOT NULL,
 		source_type   TEXT    NOT NULL,
+		provider      TEXT    NOT NULL DEFAULT '',
 		live          INTEGER NOT NULL,
 		desired_state TEXT    NOT NULL,
 		created_at    TEXT    NOT NULL
 	)`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Add the provider column to databases created before it existed.
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info('streams')`)
+	if err != nil {
+		return fmt.Errorf("check provider column: %w", err)
+	}
+	hasProvider := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "provider" {
+			hasProvider = true
+		}
+	}
+	rows.Close()
+	if !hasProvider {
+		if _, err := s.db.Exec(`ALTER TABLE streams ADD COLUMN provider TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add provider column: %w", err)
+		}
+	}
+	return nil
 }
 
 // Close releases the database connection.
@@ -65,9 +91,9 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) Create(ctx context.Context, st model.Stream) (model.Stream, error) {
 	st.CreatedAt = time.Now().UTC()
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO streams (name, source_url, source_type, live, desired_state, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		st.Name, st.SourceURL, st.SourceType, boolToInt(st.Live), st.DesiredState, st.CreatedAt.Format(time.RFC3339),
+		`INSERT INTO streams (name, source_url, source_type, provider, live, desired_state, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		st.Name, st.SourceURL, st.SourceType, st.Provider, boolToInt(st.Live), st.DesiredState, st.CreatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
 		return model.Stream{}, fmt.Errorf("insert stream: %w", err)
@@ -83,7 +109,7 @@ func (s *Store) Create(ctx context.Context, st model.Stream) (model.Stream, erro
 // Get returns the stream with the given name.
 func (s *Store) Get(ctx context.Context, name string) (model.Stream, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, source_url, source_type, live, desired_state, created_at
+		`SELECT id, name, source_url, source_type, provider, live, desired_state, created_at
 		 FROM streams WHERE name = ?`, name)
 	return scanStream(row)
 }
@@ -91,7 +117,7 @@ func (s *Store) Get(ctx context.Context, name string) (model.Stream, error) {
 // List returns all streams, newest first.
 func (s *Store) List(ctx context.Context) ([]model.Stream, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, source_url, source_type, live, desired_state, created_at
+		`SELECT id, name, source_url, source_type, provider, live, desired_state, created_at
 		 FROM streams ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list streams: %w", err)
@@ -143,7 +169,7 @@ func scanStream(sc scanner) (model.Stream, error) {
 	var st model.Stream
 	var live int
 	var created string
-	if err := sc.Scan(&st.ID, &st.Name, &st.SourceURL, &st.SourceType, &live, &st.DesiredState, &created); err != nil {
+	if err := sc.Scan(&st.ID, &st.Name, &st.SourceURL, &st.SourceType, &st.Provider, &live, &st.DesiredState, &created); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.Stream{}, ErrNotFound
 		}
