@@ -58,6 +58,11 @@
 					</select>
 					<small id="type-help">根据地址自动识别协议</small>
 				</label>
+				<label class="field field-count">
+					<span class="field-label">输出路数</span>
+					<input type="number" name="count" id="stream-count" min="1" max="200" value="1">
+					<small>同一输入源批量创建多路，名称自动加序号</small>
+				</label>
 				<label class="field field-source" id="source-url-wrap">
 					<span class="field-label" id="source-url-label">输入地址</span>
 					<input name="source_url" id="source-url"

@@ -15,6 +15,7 @@ const srcUrlHelp = document.getElementById("source-url-help");
 const typeHelp = document.getElementById("type-help");
 const srcFileWrap = document.getElementById("source-file-wrap");
 const testNote = document.getElementById("test-note");
+const countInput = document.getElementById("stream-count");
 const srcFile = document.getElementById("source-file");
 const uploadBtn = document.getElementById("upload-btn");
 const uploadStatus = document.getElementById("upload-status");
@@ -278,16 +279,65 @@ form.addEventListener("submit", async (e) => {
     return;
   }
   try {
-    await api("POST", "/api/streams", payload);
+    let batchErr = "";
+    const count = Math.min(BATCH_MAX, Math.max(1, parseInt(countInput.value, 10) || 1));
+    if (count > 1) {
+      batchErr = await createBatch(payload, count);
+    } else {
+      await api("POST", "/api/streams", payload);
+      toast("已创建并启动");
+    }
     form.reset();
     syncSourceUI();
-    toast("已创建并启动");
+    if (batchErr) {
+      formMsg.textContent = batchErr;
+      formMsg.className = "msg err";
+    }
     await refresh();
   } catch (err) {
     formMsg.textContent = err.message;
     formMsg.className = "msg err";
   }
 });
+
+// createBatch fans one source out to N streams, named <base>-1..<base>-N
+// (zero-padded to the batch width, e.g. cam-01..cam-12), so a batch never
+// collides with itself. Works for every source type — each output is an
+// independent stream (own ffmpeg process) pulling the same input. Individual
+// failures (e.g. name already taken) don't abort the batch; they are returned
+// as a summary string for the submit handler to display ("" = all succeeded).
+const BATCH_MAX = 200;
+
+async function createBatch(payload, count) {
+  const base = String(payload.name);
+  const pad = String(count).length;
+  if (base.length + 1 + pad > 64) {
+    throw new Error(`名称过长：批量后缀需要 ${1 + pad} 个字符，请缩短流名称`);
+  }
+  createSubmit.disabled = true;
+  const failures = [];
+  try {
+    for (let i = 1; i <= count; i++) {
+      const name = `${base}-${String(i).padStart(pad, "0")}`;
+      formMsg.textContent = `批量创建中 ${i}/${count}…`;
+      try {
+        await api("POST", "/api/streams", { ...payload, name });
+      } catch (err) {
+        failures.push(`${name}（${err.message}）`);
+      }
+    }
+  } finally {
+    createSubmit.disabled = false;
+    formMsg.textContent = "";
+    formMsg.className = "msg";
+  }
+  if (failures.length) {
+    toast(`已创建 ${count - failures.length}/${count} 路`);
+    return `部分创建失败：${failures.join("；")}`;
+  }
+  toast(`已批量创建并启动 ${count} 路流`);
+  return "";
+}
 
 let toastTimer;
 function toast(msg) {
