@@ -15,6 +15,7 @@ const srcUrlHelp = document.getElementById("source-url-help");
 const typeHelp = document.getElementById("type-help");
 const srcFileWrap = document.getElementById("source-file-wrap");
 const testNote = document.getElementById("test-note");
+const testCountInput = document.getElementById("test-count");
 const srcFile = document.getElementById("source-file");
 const uploadBtn = document.getElementById("upload-btn");
 const uploadStatus = document.getElementById("upload-status");
@@ -278,16 +279,69 @@ form.addEventListener("submit", async (e) => {
     return;
   }
   try {
-    await api("POST", "/api/streams", payload);
+    let batchErr = "";
+    if (!payload.provider && payload.source_type === "test") {
+      batchErr = await createTestBatch(payload);
+    } else {
+      await api("POST", "/api/streams", payload);
+      toast("已创建并启动");
+    }
     form.reset();
     syncSourceUI();
-    toast("已创建并启动");
+    if (batchErr) {
+      formMsg.textContent = batchErr;
+      formMsg.className = "msg err";
+    }
     await refresh();
   } catch (err) {
     formMsg.textContent = err.message;
     formMsg.className = "msg err";
   }
 });
+
+// createTestBatch creates one or N test-pattern streams. N>1 derives names as
+// <base>-1..<base>-N (zero-padded to the batch width, e.g. cam-01..cam-12), so
+// a batch never collides with itself. Individual failures (e.g. name already
+// taken) don't abort the batch; they are returned as a summary string for the
+// submit handler to display ("" = all succeeded).
+const TEST_BATCH_MAX = 200;
+
+async function createTestBatch(payload) {
+  const count = Math.min(TEST_BATCH_MAX, Math.max(1, parseInt(testCountInput.value, 10) || 1));
+  if (count === 1) {
+    await api("POST", "/api/streams", payload);
+    toast("已创建并启动");
+    return "";
+  }
+  const base = String(payload.name);
+  const pad = String(count).length;
+  if (base.length + 1 + pad > 64) {
+    throw new Error(`名称过长：批量后缀需要 ${1 + pad} 个字符，请缩短流名称`);
+  }
+  createSubmit.disabled = true;
+  const failures = [];
+  try {
+    for (let i = 1; i <= count; i++) {
+      const name = `${base}-${String(i).padStart(pad, "0")}`;
+      formMsg.textContent = `批量创建中 ${i}/${count}…`;
+      try {
+        await api("POST", "/api/streams", { ...payload, name });
+      } catch (err) {
+        failures.push(`${name}（${err.message}）`);
+      }
+    }
+  } finally {
+    createSubmit.disabled = false;
+    formMsg.textContent = "";
+    formMsg.className = "msg";
+  }
+  if (failures.length) {
+    toast(`已创建 ${count - failures.length}/${count} 路`);
+    return `部分创建失败：${failures.join("；")}`;
+  }
+  toast(`已批量创建并启动 ${count} 路测试流`);
+  return "";
+}
 
 let toastTimer;
 function toast(msg) {
