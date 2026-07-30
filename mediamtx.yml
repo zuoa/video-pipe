@@ -42,6 +42,11 @@ rtspAddress: :8554
 rtmpAddress: :1935
 hlsAddress: :8888
 webrtcAddress: :8889
+# MediaMTX runs in Docker, so by default it only announces the container's
+# internal IP (172.x) as a WebRTC ICE candidate — browsers on the LAN can't
+# reach it, so the page loads but the media never connects. Add the
+# externally-reachable host so it's included in the SDP candidates.
+webrtcAdditionalHosts: ["10.0.104.15"]
 srtAddress: :8890
 
 # --- Paths -----------------------------------------------------------------
