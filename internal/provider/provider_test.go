@@ -96,6 +96,32 @@ func TestDouyuStreamAuth(t *testing.T) {
 	}
 }
 
+func TestDouyuPlayResponse_StringData(t *testing.T) {
+	var failed douyuPlayResponse
+	if err := json.Unmarshal([]byte(`{"error":102,"msg":"room is offline","data":""}`), &failed); err != nil {
+		t.Fatalf("unmarshal failure response: %v", err)
+	}
+	if failed.Error != 102 || failed.Msg != "room is offline" {
+		t.Fatalf("failure response = code %d, msg %q", failed.Error, failed.Msg)
+	}
+	if data, err := failed.playData(); err != nil || data != (douyuPlayData{}) {
+		t.Fatalf("empty string data = %#v, %v", data, err)
+	}
+
+	var encoded douyuPlayResponse
+	body := `{"error":0,"msg":"ok","data":"{\"rtmp_url\":\"https://cdn.example/live\",\"rtmp_live\":\"room.flv\"}"}`
+	if err := json.Unmarshal([]byte(body), &encoded); err != nil {
+		t.Fatalf("unmarshal encoded response: %v", err)
+	}
+	data, err := encoded.playData()
+	if err != nil {
+		t.Fatalf("playData: %v", err)
+	}
+	if data.RtmpURL != "https://cdn.example/live" || data.RtmpLive != "room.flv" {
+		t.Fatalf("playData = %#v", data)
+	}
+}
+
 func TestDouyuResolver_CurrentWebFlow(t *testing.T) {
 	const (
 		alias     = "12345"

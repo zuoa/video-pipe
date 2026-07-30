@@ -6,10 +6,12 @@ package provider
 // getH5PlayV1. Keep this flow aligned with the web player when Douyu changes it.
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -100,9 +102,13 @@ func (d *douyuResolver) Resolve(ctx context.Context, pageURL string) (*Result, e
 	if resp.Error != 0 {
 		return nil, fmt.Errorf("douyu: getH5PlayV1: code %d: %s", resp.Error, resp.Msg)
 	}
-	u := resp.Data.Player1
-	if u == "" && resp.Data.RtmpURL != "" && resp.Data.RtmpLive != "" {
-		u = strings.TrimRight(resp.Data.RtmpURL, "/") + "/" + strings.TrimLeft(resp.Data.RtmpLive, "/")
+	play, err := resp.playData()
+	if err != nil {
+		return nil, fmt.Errorf("douyu: decode getH5PlayV1 data: %w", err)
+	}
+	u := play.Player1
+	if u == "" && play.RtmpURL != "" && play.RtmpLive != "" {
+		u = strings.TrimRight(play.RtmpURL, "/") + "/" + strings.TrimLeft(play.RtmpLive, "/")
 	}
 	if u == "" {
 		return nil, fmt.Errorf("douyu: no stream url (room may be offline): %s", resp.Msg)
@@ -126,13 +132,50 @@ type douyuEncryptionData struct {
 }
 
 type douyuPlayResponse struct {
-	Error int    `json:"error"`
-	Msg   string `json:"msg"`
-	Data  struct {
-		RtmpURL  string `json:"rtmp_url"`
-		RtmpLive string `json:"rtmp_live"`
-		Player1  string `json:"player_1"`
-	} `json:"data"`
+	Error int             `json:"error"`
+	Msg   string          `json:"msg"`
+	Data  json.RawMessage `json:"data"`
+}
+
+type douyuPlayData struct {
+	RtmpURL  string `json:"rtmp_url"`
+	RtmpLive string `json:"rtmp_live"`
+	Player1  string `json:"player_1"`
+}
+
+// playData accepts both response shapes seen in the wild. Successful responses
+// normally contain an object, while failures commonly use data:"". Some Douyu
+// edges also return a JSON-encoded object or a direct URL as a string.
+func (r douyuPlayResponse) playData() (douyuPlayData, error) {
+	raw := bytes.TrimSpace(r.Data)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return douyuPlayData{}, nil
+	}
+	if raw[0] == '"' {
+		var encoded string
+		if err := json.Unmarshal(raw, &encoded); err != nil {
+			return douyuPlayData{}, err
+		}
+		encoded = strings.TrimSpace(encoded)
+		if encoded == "" {
+			return douyuPlayData{}, nil
+		}
+		if strings.HasPrefix(encoded, "http://") || strings.HasPrefix(encoded, "https://") {
+			return douyuPlayData{Player1: encoded}, nil
+		}
+		if !json.Valid([]byte(encoded)) {
+			if len(encoded) > 200 {
+				encoded = encoded[:200] + "..."
+			}
+			return douyuPlayData{}, fmt.Errorf("unexpected string response %q", encoded)
+		}
+		raw = []byte(encoded)
+	}
+	var data douyuPlayData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return douyuPlayData{}, err
+	}
+	return data, nil
 }
 
 // douyuStreamAuth mirrors the current web player's stream-signing algorithm:
