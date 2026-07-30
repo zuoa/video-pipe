@@ -1,0 +1,74 @@
+{{- /* index.html: server-rendered shell. The stream table is rendered client-side
+    from GET /api/streams by app.js. */ -}}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>video-pipe · 流转换网关</title>
+	<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+	<header>
+		<h1>video-pipe</h1>
+		<p class="sub">多协议流转换网关 · MediaMTX 主机：<code>{{.PlaybackHost}}</code></p>
+	</header>
+
+	<main>
+		<section class="card">
+			<h2>新增流</h2>
+			<form id="create-form" autocomplete="off">
+				<label>
+					<span>名称</span>
+					<input name="name" required pattern="[a-z0-9][a-z0-9_\-]{0,63}"
+						placeholder="如 cam01（小写字母/数字/-/_）">
+				</label>
+				<label>
+					<span>类型</span>
+					<select name="source_type">
+						{{range .SourceTypes}}<option value="{{.}}">{{.}}</option>{{end}}
+					</select>
+				</label>
+				<label class="grow">
+					<span>输入源地址</span>
+					<input name="source_url" placeholder="rtsp://… / rtmp://… / http://… / /data/x.mp4（test 类型留空）">
+				</label>
+				<button type="submit">创建并启动</button>
+			</form>
+			<p id="form-msg" class="msg"></p>
+		</section>
+
+		<section class="card">
+			<h2>流列表 <span class="muted">每 5 秒自动刷新</span></h2>
+			<div class="table-wrap">
+				<table>
+					<thead>
+						<tr>
+							<th>状态</th>
+							<th>名称</th>
+							<th>类型</th>
+							<th>输入源</th>
+							<th title="自动重启次数">重启</th>
+							<th title="当前观看者数">观看</th>
+							<th>播放地址（可复制到 VLC/浏览器测试）</th>
+							<th>操作</th>
+						</tr>
+					</thead>
+					<tbody id="streams-body">
+						<tr><td colspan="8" class="muted">加载中…</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<p class="legend">
+			<span><span class="dot green"></span>在线</span>
+			<span><span class="dot yellow"></span>推流中/重启中</span>
+			<span><span class="dot red"></span>错误</span>
+			<span><span class="dot grey"></span>已停止</span>
+		</p>
+	</main>
+
+	<script src="/static/app.js"></script>
+</body>
+</html>

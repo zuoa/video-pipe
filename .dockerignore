@@ -1,0 +1,15 @@
+# Keep the CI build context lean — none of these are needed inside the image.
+.git
+.github
+.idea
+data/
+out/
+.env
+.env.example
+.gitignore
+.gitattributes
+*.md
+video-pipe
+video-pipe:dev
+*.log
+.DS_Store

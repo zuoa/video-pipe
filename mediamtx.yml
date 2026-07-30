@@ -1,0 +1,49 @@
+###############################################
+# MediaMTX configuration for video-pipe (MVP) #
+###############################################
+#
+# Only the fields video-pipe cares about are listed; every other field uses the
+# MediaMTX built-in default. See https://github.com/bluenviron/mediamtx.
+
+# --- Control API -----------------------------------------------------------
+# OFF by default. The backend queries /v3/paths/get/{name} for stream status.
+api: true
+apiAddress: :9997
+
+# --- Auth ------------------------------------------------------------------
+# publish / read / playback are open to anyone (MVP has no auth, per PRD §0).
+# The Control API's `api` action is localhost-only by default; because the
+# backend runs in a separate container, we add a `wrapper` user that it
+# authenticates as via HTTP Basic Auth (MEDIAMTX_USER / MEDIAMTX_PASS).
+authInternalUsers:
+  - user: any
+    pass: ""
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+  - user: any
+    pass: ""
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: api
+      - action: metrics
+      - action: pprof
+  - user: wrapper
+    pass: change-me
+    permissions:
+      - action: api
+
+# --- Output ports (published by docker-compose) ----------------------------
+rtspAddress: :8554
+rtmpAddress: :1935
+hlsAddress: :8888
+webrtcAddress: :8889
+srtAddress: :8890
+
+# --- Paths -----------------------------------------------------------------
+# The catch-all lets any path name accept an external publisher (our ffmpeg
+# push) immediately, with no pre-creation and no auth. video-pipe does not need
+# to create per-stream path configs.
+paths:
+  all_others:

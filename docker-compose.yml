@@ -1,0 +1,41 @@
+services:
+  # MediaMTX: the conversion core. Accepts our ffmpeg RTSP push and republishes
+  # the same stream as RTSP/RTMP/HLS/WebRTC/SRT.
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: video-pipe-mediamtx
+    restart: unless-stopped
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "8554:8554"        # RTSP (TCP)
+      - "1935:1935"        # RTMP (TCP)
+      - "8888:8888"        # HLS (HTTP)
+      - "8889:8889"        # WebRTC signaling (HTTP)
+      - "8189:8189/udp"    # WebRTC ICE (UDP)
+      - "8890:8890/udp"    # SRT (UDP)
+      - "9997:9997"        # Control API (used by the backend)
+
+  # video-pipe: scheduling/management layer (this repo). The image is built and
+  # published by GitHub Actions (see .github/workflows/ci.yml); this compose file
+  # only PULLS it — there is no local build step. Set VIDEOPIPE_IMAGE in a .env
+  # file (see .env.example) or the environment.
+  video-pipe:
+    image: ${VIDEOPIPE_IMAGE:?create .env from .env.example and set VIDEOPIPE_IMAGE}
+    container_name: video-pipe
+    restart: unless-stopped
+    pull_policy: always
+    depends_on:
+      - mediamtx
+    environment:
+      ADDR: ":8080"
+      DB_PATH: "/data/video-pipe.db"
+      MEDIAMTX_API: "http://mediamtx:9997"   # container-internal API base
+      MEDIAMTX_HOST: "mediamtx"              # host ffmpeg pushes RTSP to
+      MEDIAMTX_USER: "wrapper"               # must match authInternalUsers in mediamtx.yml
+      MEDIAMTX_PASS: "change-me"
+      PLAYBACK_HOST: "localhost"             # host browsers use to reach MediaMTX
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
