@@ -74,6 +74,10 @@ func TestDouyuRealRoomID(t *testing.T) {
 	if got := douyuRealRoomID(html, "fallback"); got != "9252212" {
 		t.Errorf("douyuRealRoomID = %q, want 9252212", got)
 	}
+	nextData := `roomInfo\":{\"room\":{\"room_id\":9252212,\"vipId\":0}`
+	if got := douyuRealRoomID(nextData, "fallback"); got != "9252212" {
+		t.Errorf("douyuRealRoomID Next data = %q, want 9252212", got)
+	}
 	if got := douyuRealRoomID("<html></html>", "123"); got != "123" {
 		t.Errorf("douyuRealRoomID fallback = %q, want 123", got)
 	}
@@ -136,9 +140,10 @@ func TestDouyuResolver_CurrentWebFlow(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/betard/"+alias:
+		case r.Method == http.MethodGet && r.URL.Path == "/api/RoomApi/room/"+alias:
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"room": map[string]any{"room_id": roomID},
+				"error": 0,
+				"data":  map[string]any{"room_id": roomID},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/wgapi/livenc/liveweb/websec/getEncryption":
 			if r.URL.Query().Get("did") == "" {
@@ -171,7 +176,7 @@ func TestDouyuResolver_CurrentWebFlow(t *testing.T) {
 	}))
 	defer server.Close()
 
-	resolver := &douyuResolver{origin: server.URL}
+	resolver := &douyuResolver{origin: server.URL, roomAPIOrigin: server.URL}
 	got, err := resolver.Resolve(context.Background(), server.URL+"/"+alias)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

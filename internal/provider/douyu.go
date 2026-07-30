@@ -21,11 +21,15 @@ import (
 	"time"
 )
 
-const douyuOrigin = "https://www.douyu.com"
+const (
+	douyuOrigin        = "https://www.douyu.com"
+	douyuRoomAPIOrigin = "https://open.douyucdn.cn"
+)
 
 type douyuResolver struct {
-	// origin is overridden by tests. Production uses douyuOrigin.
-	origin string
+	// Origins are overridden by tests. Production uses the constants above.
+	origin        string
+	roomAPIOrigin string
 }
 
 func (d *douyuResolver) Resolve(ctx context.Context, pageURL string) (*Result, error) {
@@ -38,6 +42,11 @@ func (d *douyuResolver) Resolve(ctx context.Context, pageURL string) (*Result, e
 		origin = douyuOrigin
 	}
 	origin = strings.TrimRight(origin, "/")
+	roomAPIOrigin := d.roomAPIOrigin
+	if roomAPIOrigin == "" {
+		roomAPIOrigin = douyuRoomAPIOrigin
+	}
+	roomAPIOrigin = strings.TrimRight(roomAPIOrigin, "/")
 	referer := origin + "/" + room
 	hdrs := headers(referer)
 
@@ -47,9 +56,9 @@ func (d *douyuResolver) Resolve(ctx context.Context, pageURL string) (*Result, e
 	// getH5PlayV1 only accepts the canonical room id. Numeric vanity ids and
 	// aliases must first be resolved through the same room metadata endpoint
 	// used by Douyu's web application.
-	realRoom, err := douyuCanonicalRoomID(ctx, origin, referer, room, hdrs)
+	realRoom, err := douyuCanonicalRoomID(ctx, origin, roomAPIOrigin, referer, room, hdrs)
 	if err != nil {
-		return nil, fmt.Errorf("douyu: resolve room id: %w", err)
+		return nil, fmt.Errorf("douyu: resolve room id for input %s: %w", room, err)
 	}
 
 	// The encryption response is tied to the device id and user agent, so all
@@ -130,6 +139,13 @@ type douyuRoomInfoResponse struct {
 	Room struct {
 		RoomID json.RawMessage `json:"room_id"`
 	} `json:"room"`
+}
+
+type douyuPublicRoomResponse struct {
+	Error int `json:"error"`
+	Data  struct {
+		RoomID json.RawMessage `json:"room_id"`
+	} `json:"data"`
 }
 
 type douyuEncryptionData struct {
@@ -215,9 +231,27 @@ func md5Hex(s string) string {
 
 func douyuCanonicalRoomID(
 	ctx context.Context,
-	origin, referer, room string,
+	origin, roomAPIOrigin, referer, room string,
 	hdrs map[string]string,
 ) (string, error) {
+	var public douyuPublicRoomResponse
+	publicErr := getJSON(
+		ctx,
+		roomAPIOrigin+"/api/RoomApi/room/"+url.PathEscape(room),
+		hdrs,
+		&public,
+	)
+	if publicErr == nil {
+		if public.Error == 0 {
+			if canonical := numericJSONValue(public.Data.RoomID); canonical != "" {
+				return canonical, nil
+			}
+			publicErr = fmt.Errorf("public room API has no room_id")
+		} else {
+			publicErr = fmt.Errorf("public room API code %d", public.Error)
+		}
+	}
+
 	var info douyuRoomInfoResponse
 	infoErr := getJSON(ctx, origin+"/betard/"+url.PathEscape(room), hdrs, &info)
 	if infoErr == nil {
@@ -235,7 +269,10 @@ func douyuCanonicalRoomID(
 		}
 		pageErr = fmt.Errorf("room page has no canonical room_id")
 	}
-	return "", fmt.Errorf("metadata: %v; page fallback: %v", infoErr, pageErr)
+	return "", fmt.Errorf(
+		"public API: %v; metadata: %v; page fallback: %v",
+		publicErr, infoErr, pageErr,
+	)
 }
 
 func numericJSONValue(raw json.RawMessage) string {
@@ -255,7 +292,10 @@ var (
 	// room id or alias is the last numeric path segment of a douyu URL.
 	douyuRoomRe = regexp.MustCompile(`(\d+)/?(?:[\?#].*)?$`)
 	// real room id embedded in the page (Douyu short aliases resolve to these).
-	douyuRealRoomRe = regexp.MustCompile(`(?:\$ROOM\.room_id|"room_id"|\$ROOM\['room_id'\]|data-rid)[^\d]{0,3}(\d{3,})`)
+	douyuRealRoomRe = regexp.MustCompile(
+		`(?:\$ROOM\.room_id|roomInfo\\?"\s*:\s*\{\\?"room\\?"\s*:\s*\{\\?"room_id\\?"|` +
+			`"room_id"|\$ROOM\['room_id'\]|data-rid)[^\d]{0,3}(\d{3,})`,
+	)
 )
 
 func douyuRoomFromURL(u string) string {
