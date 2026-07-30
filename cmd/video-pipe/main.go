@@ -46,9 +46,13 @@ func main() {
 		log.Error("upload dir create failed", "dir", cfg.UploadDir, "err", err)
 		os.Exit(1)
 	}
+	if err := os.MkdirAll(cfg.ProviderCacheDir, 0o755); err != nil {
+		log.Error("provider cache dir create failed", "dir", cfg.ProviderCacheDir, "err", err)
+		os.Exit(1)
+	}
 
 	mtxClient := mediamtx.New(cfg.MediaMTXAPI, cfg.MediaMTXUser, cfg.MediaMTXPass)
-	mgr := manager.New(st, mtxClient, cfg.MediaMTXHost, log)
+	mgr := manager.New(st, mtxClient, cfg.MediaMTXHost, cfg.ProviderCacheDir, log)
 	if err := mgr.Start(ctx); err != nil {
 		log.Error("manager start failed", "err", err)
 		os.Exit(1)

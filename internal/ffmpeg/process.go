@@ -199,15 +199,15 @@ func (h *Handle) retry(ctx context.Context, restarts *int) bool {
 }
 
 // buildArgs produces the ffmpeg args for one run. For provider sources it calls
-// the resolver first (each run, so expiring live URLs refresh) under a timeout;
-// for direct sources it builds args once from the stored stream.
+// the resolver first (each run, so expiring live URLs refresh). The stream
+// context controls cancellation; Bilibili VOD resolution can include a full
+// download and therefore must not have the short API-resolution timeout used
+// by earlier versions.
 func (h *Handle) buildArgs(ctx context.Context) ([]string, bool, error) {
 	if h.resolve == nil {
 		return BuildArgs(h.stream, h.mtxHost, "", nil), h.stream.Live, nil
 	}
-	resCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	url, headers, live, err := h.resolve(resCtx)
+	url, headers, live, err := h.resolve(ctx)
 	if err != nil {
 		return nil, false, err
 	}

@@ -36,6 +36,7 @@ services:
       MEDIAMTX_PASS: "change-me"
       PLAYBACK_HOST: "${PLAYBACK_HOST:-localhost}"  # override in .env; host browsers use to reach MediaMTX
       UPLOAD_DIR: "/data/uploads"            # uploaded source files (under mounted ./data)
+      PROVIDER_CACHE_DIR: "${PROVIDER_CACHE_DIR:-/data/provider-cache}"  # downloaded Bilibili VODs for local looping
       UPLOAD_MAX_BYTES: "${UPLOAD_MAX_BYTES:-0}"  # single-upload size cap; 0 = unlimited
     ports:
       - "8080:8080"

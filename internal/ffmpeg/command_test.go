@@ -25,12 +25,12 @@ func TestBuildArgs_Common(t *testing.T) {
 			args := BuildArgs(tc.s, "mediamtx", "", nil)
 			joined := strings.Join(args, " ")
 			checks := map[string]bool{
-				"has -loglevel warning":  containsPair(args, "-loglevel", "warning"),
-				"copies video":           containsPair(args, "-c:v", "copy"),
-				"copies audio":           containsPair(args, "-c:a", "copy"),
-				"outputs rtsp":           containsPair(args, "-f", "rtsp"),
-				"has progress pipe":      containsPair(args, "-progress", "pipe:1"),
-				"target path present":    strings.Contains(joined, "rtsp://mediamtx:8554/cam1"),
+				"has -loglevel warning": containsPair(args, "-loglevel", "warning"),
+				"copies video":          containsPair(args, "-c:v", "copy"),
+				"copies audio":          containsPair(args, "-c:a", "copy"),
+				"outputs rtsp":          containsPair(args, "-f", "rtsp"),
+				"has progress pipe":     containsPair(args, "-progress", "pipe:1"),
+				"target path present":   strings.Contains(joined, "rtsp://mediamtx:8554/cam1"),
 			}
 			for label, ok := range checks {
 				if !ok {
@@ -52,6 +52,26 @@ func TestBuildArgs_LiveHasNoRealtimeFlag(t *testing.T) {
 	args := BuildArgs(stream(model.SourceRTSP, "rtsp://x"), "mediamtx", "", nil)
 	if contains(args, "-re") {
 		t.Errorf("live RTSP source should not set -re; got %v", args)
+	}
+}
+
+func TestBuildArgs_CachedProviderVODLoopsLocally(t *testing.T) {
+	const local = "/data/provider-cache/bili.media"
+	args := BuildArgs(stream(model.SourceHTTP, "https://www.bilibili.com/video/BV1xx"), "mediamtx", local, nil)
+
+	if !containsPair(args, "-stream_loop", "-1") {
+		t.Errorf("cached provider VOD must loop forever; got %v", args)
+	}
+	if !contains(args, "-re") {
+		t.Errorf("cached provider VOD must be paced with -re; got %v", args)
+	}
+	if !containsPair(args, "-i", local) {
+		t.Errorf("cached provider VOD must use local input; got %v", args)
+	}
+	for _, forbidden := range []string{"-reconnect", "-user_agent", "-headers"} {
+		if contains(args, forbidden) {
+			t.Errorf("cached provider VOD must not use HTTP option %s; got %v", forbidden, args)
+		}
 	}
 }
 
@@ -99,7 +119,7 @@ func TestBuildArgs_TestSourceEncodesToH264(t *testing.T) {
 	}
 }
 
-func contains(args []string, v string) bool        { return indexOf(args, v) >= 0 }
+func contains(args []string, v string) bool { return indexOf(args, v) >= 0 }
 func indexOf(args []string, v string) int {
 	for i, a := range args {
 		if a == v {

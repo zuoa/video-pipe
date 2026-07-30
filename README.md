@@ -62,7 +62,7 @@
 
 - B站解析使用内置的纯 Go resolver（含 WBI 签名）；**斗鱼为实验性自研解析**（依赖站点的 `sign` 算法，可能随站点改版失效，需按真实房间联调）。
 - 未带登录 cookie，只能拿到公开清晰度（通常标清/流畅）；HD/会员内容暂不可用。
-- B站普通视频播放到结尾后会重新解析 CDN 地址并循环播放；B站/斗鱼直播断流时会重新解析并按退避策略重连。
+- B站普通视频会先完整下载到本地持久化缓存，下载完成后才由 ffmpeg 从本地文件无限循环推流；停止流会保留缓存以便快速恢复，删除流时会同步清理缓存。B站/斗鱼直播仍直接拉流，断流时会重新解析并按退避策略重连。
 - 直播直链会过期，断流/重启时会自动重新解析。
 
 ## 输出协议（可选）
@@ -82,6 +82,7 @@ MediaMTX 对每个流默认开 RTSP/RTMP/HLS/WebRTC/SRT 全部 5 种。设置环
 | `MEDIAMTX_USER` / `MEDIAMTX_PASS` | `wrapper` / `change-me` | 控制 API Basic Auth（须与 `mediamtx.yml` 的 `authInternalUsers` 一致） |
 | `PLAYBACK_HOST` | `localhost` | **浏览器**访问 MediaMTX 的主机名，用于拼播放地址（容器内地址浏览器不可达，远程访问必须改为对外可达地址；可在 `.env` 覆盖） |
 | `UPLOAD_DIR` | `/data/uploads` | 上传文件存放目录（挂载到宿主 `./data/uploads`） |
+| `PROVIDER_CACHE_DIR` | `/data/provider-cache` | B站普通视频的完整下载缓存目录（挂载到宿主 `./data/provider-cache`） |
 | `UPLOAD_MAX_BYTES` | `0` | 单个上传文件大小上限（字节），`0` 表示不限。超出返回 413 |
 | `ENABLE_RTSP` / `ENABLE_RTMP` / `ENABLE_HLS` / `ENABLE_WEBRTC` / `ENABLE_SRT` | 全部启用 | 是否在 UI/API 展示对应协议的播放地址（`0`/`false`/`no` 关闭）。配合 `mediamtx.yml` 的 `xxx: no` 可真正关闭该协议 |
 

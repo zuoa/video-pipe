@@ -5,7 +5,11 @@ package manager
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -21,10 +25,11 @@ const pollInterval = 5 * time.Second
 
 // Manager coordinates stream processes.
 type Manager struct {
-	store   *store.Store
-	mtx     *mediamtx.Client
-	mtxHost string
-	log     *slog.Logger
+	store    *store.Store
+	mtx      *mediamtx.Client
+	mtxHost  string
+	cacheDir string
+	log      *slog.Logger
 
 	ctx context.Context
 
@@ -41,13 +46,14 @@ type entry struct {
 }
 
 // New creates a Manager. Call Start to boot.
-func New(st *store.Store, mtx *mediamtx.Client, mtxHost string, log *slog.Logger) *Manager {
+func New(st *store.Store, mtx *mediamtx.Client, mtxHost, cacheDir string, log *slog.Logger) *Manager {
 	return &Manager{
-		store:   st,
-		mtx:     mtx,
-		mtxHost: mtxHost,
-		log:     log,
-		handles: make(map[string]*entry),
+		store:    st,
+		mtx:      mtx,
+		mtxHost:  mtxHost,
+		cacheDir: cacheDir,
+		log:      log,
+		handles:  make(map[string]*entry),
 	}
 }
 
@@ -106,8 +112,22 @@ func (m *Manager) Restart(name string) error {
 
 // Delete stops a stream and removes it from the store.
 func (m *Manager) Delete(name string) error {
+	s, err := m.store.Get(m.ctx, name)
+	if err != nil {
+		return err
+	}
 	m.stop(name)
-	return m.store.Delete(m.ctx, name)
+	if err := m.store.Delete(m.ctx, name); err != nil {
+		return err
+	}
+	if s.Provider == "bilibili" {
+		for _, path := range []string{m.providerCachePath(s), m.providerCachePath(s) + ".part"} {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				m.log.Warn("remove provider cache failed", "stream", name, "path", path, "err", err)
+			}
+		}
+	}
+	return nil
 }
 
 // HandleSnapshot returns the live process status for a stream, or (zero,false)
@@ -142,6 +162,15 @@ func (m *Manager) start(ctx context.Context, s model.Stream) bool {
 			if err != nil {
 				return "", nil, false, err
 			}
+			if s.Provider == "bilibili" && !res.Live {
+				cachePath, err := m.cacheProviderVOD(c, s, res)
+				if err != nil {
+					return "", nil, false, fmt.Errorf("cache bilibili video: %w", err)
+				}
+				// The local file is looped by ffmpeg and therefore behaves like
+				// a never-ending source from the supervisor's perspective.
+				return cachePath, nil, true, nil
+			}
 			return res.URL, res.Headers, res.Live, nil
 		}
 	}
@@ -163,6 +192,34 @@ func (m *Manager) start(ctx context.Context, s model.Stream) bool {
 		m.log.Info("manager: process goroutine exited", "stream", s.Name)
 	}()
 	return true
+}
+
+func (m *Manager) cacheProviderVOD(ctx context.Context, s model.Stream, res *provider.Result) (string, error) {
+	path := m.providerCachePath(s)
+	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+		m.log.Info("using cached provider VOD", "stream", s.Name, "path", path, "bytes", info.Size())
+		return path, nil
+	}
+
+	started := time.Now()
+	m.log.Info("downloading provider VOD before playback", "stream", s.Name, "path", path)
+	n, err := provider.DownloadToFile(ctx, res.URL, res.Headers, path)
+	if err != nil {
+		return "", err
+	}
+	m.log.Info("provider VOD download complete",
+		"stream", s.Name,
+		"path", path,
+		"bytes", n,
+		"elapsed", time.Since(started).Round(time.Second),
+	)
+	return path, nil
+}
+
+func (m *Manager) providerCachePath(s model.Stream) string {
+	sum := sha256.Sum256([]byte(s.SourceURL))
+	name := fmt.Sprintf("%s-%x.media", s.Name, sum[:8])
+	return filepath.Join(m.cacheDir, name)
 }
 
 // stop terminates the handle for name (if any) and waits for it to exit.

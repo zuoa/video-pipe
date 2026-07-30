@@ -25,6 +25,8 @@ type Config struct {
 	PlaybackHost string
 	// UploadDir stores user-uploaded source files (under the mounted /data volume).
 	UploadDir string
+	// ProviderCacheDir stores fully downloaded provider VODs for local looping.
+	ProviderCacheDir string
 	// UploadMaxBytes caps the size of a single upload; 0 means unlimited.
 	UploadMaxBytes int64
 	// Enabled maps protocol name (rtsp/rtmp/hls/webrtc/srt) to whether it is
@@ -35,16 +37,17 @@ type Config struct {
 // Load reads configuration from environment variables, applying defaults.
 func Load() (Config, error) {
 	c := Config{
-		Addr:           env("ADDR", ":8080"),
-		DBPath:         env("DB_PATH", "/data/video-pipe.db"),
-		MediaMTXAPI:    strings.TrimRight(env("MEDIAMTX_API", "http://mediamtx:9997"), "/"),
-		MediaMTXUser:   env("MEDIAMTX_USER", "wrapper"),
-		MediaMTXPass:   env("MEDIAMTX_PASS", "change-me"),
-		MediaMTXHost:   env("MEDIAMTX_HOST", "mediamtx"),
-		PlaybackHost:   env("PLAYBACK_HOST", "localhost"),
-		UploadDir:      env("UPLOAD_DIR", "/data/uploads"),
-		UploadMaxBytes: envInt("UPLOAD_MAX_BYTES", 0),
-		Enabled:        enabledProtocols(),
+		Addr:             env("ADDR", ":8080"),
+		DBPath:           env("DB_PATH", "/data/video-pipe.db"),
+		MediaMTXAPI:      strings.TrimRight(env("MEDIAMTX_API", "http://mediamtx:9997"), "/"),
+		MediaMTXUser:     env("MEDIAMTX_USER", "wrapper"),
+		MediaMTXPass:     env("MEDIAMTX_PASS", "change-me"),
+		MediaMTXHost:     env("MEDIAMTX_HOST", "mediamtx"),
+		PlaybackHost:     env("PLAYBACK_HOST", "localhost"),
+		UploadDir:        env("UPLOAD_DIR", "/data/uploads"),
+		ProviderCacheDir: env("PROVIDER_CACHE_DIR", "/data/provider-cache"),
+		UploadMaxBytes:   envInt("UPLOAD_MAX_BYTES", 0),
+		Enabled:          enabledProtocols(),
 	}
 	if c.PlaybackHost == "" {
 		return Config{}, fmt.Errorf("PLAYBACK_HOST must not be empty")

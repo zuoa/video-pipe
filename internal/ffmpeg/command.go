@@ -21,10 +21,9 @@ import (
 //   - http:   libavformat reconnect options for transient failures
 //   - test:   a hue-cycling lavfi test pattern (no external source needed), encoded to H.264
 //
-// When resURL is non-empty (a provider-resolved CDN URL), it is used as the input
-// instead of s.SourceURL, with the supplied HTTP headers (User-Agent via
-// -user_agent, the rest via -headers) and reconnect options — Bilibili/Douyu CDNs
-// 403 without a correct Referer and drop connections, so resilience matters.
+// When resURL is non-empty, it is used instead of s.SourceURL. HTTP(S) provider
+// URLs get the supplied headers and reconnect options. A local resolved path is
+// paced and looped forever; this is used by cached Bilibili VODs.
 //
 // For real sources only the first video and first audio stream are mapped
 // (`-map 0:v:0? -map 0:a:0?`) so stray tracks (data/subtitle/extra audio) do not
@@ -39,7 +38,7 @@ func BuildArgs(s model.Stream, mediamtxHost, resURL string, headers map[string]s
 	args := []string{"-nostdin", "-nostats", "-hide_banner", "-loglevel", "warning"}
 
 	switch {
-	case resURL != "":
+	case isHTTPURL(resURL):
 		// Provider-resolved source: http URL with site-specific headers.
 		args = append(args, "-user_agent", headerUserAgent(headers))
 		if h := headerBlock(headers); h != "" {
@@ -49,6 +48,10 @@ func BuildArgs(s model.Stream, mediamtxHost, resURL string, headers map[string]s
 			"-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
 			"-i", resURL,
 		)
+	case resURL != "":
+		// Downloaded provider VOD: do not start until the complete local file
+		// exists, then pace it at media time and loop in one ffmpeg process.
+		args = append(args, "-stream_loop", "-1", "-re", "-i", resURL)
 	case s.SourceType == model.SourceRTSP:
 		args = append(args, "-rtsp_transport", "tcp", "-rw_timeout", "5000000", "-i", s.SourceURL)
 	case s.SourceType == model.SourceRTMP:
@@ -78,6 +81,10 @@ func BuildArgs(s model.Stream, mediamtxHost, resURL string, headers map[string]s
 	args = append(args, codecs...)
 	args = append(args, "-f", "rtsp", "-rtsp_transport", "tcp", out, "-progress", "pipe:1")
 	return args
+}
+
+func isHTTPURL(rawURL string) bool {
+	return strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://")
 }
 
 // headerUserAgent returns the User-Agent from headers (case-insensitive) or a
