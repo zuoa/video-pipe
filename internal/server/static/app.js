@@ -329,6 +329,7 @@ function setPlayerStatus(msg, isErr) {
 
 function openPlayer(name, proto, baseUrl) {
   closePlayer();
+  playerVideo.muted = false; // start each playback attempting audio; muted only as autoplay fallback
   modalTitle.textContent = `${name} · ${proto.toUpperCase()}`;
   setPlayerStatus(proto === "webrtc" ? "正在建立 WebRTC 连接…" : "正在加载 HLS…");
   modal.hidden = false;
@@ -360,11 +361,31 @@ function loadHlsJs() {
   return hlsJsPromise;
 }
 
+// autoplayVideo starts playback and recovers from the most common silent
+// failure: browsers block autoplay of an *unmuted* video without a recent user
+// gesture. play() then either rejects (NotAllowedError) or just stalls. In
+// either case we fall back to muted playback so the stream is actually visible
+// — sound can be re-enabled via the player's speaker button.
+function autoplayVideo() {
+  const muteAndPlay = () => {
+    if (playerVideo.muted) return;
+    playerVideo.muted = true;
+    setPlayerStatus("已静音自动播放，点击播放器喇叭可恢复声音");
+    playerVideo.play().catch(() => {});
+  };
+  playerVideo.play().catch((err) => {
+    if (err && err.name === "NotAllowedError") muteAndPlay();
+  });
+  // Cover the stall case (promise neither resolves nor advances): if the video
+  // is still paused a moment later, the browser is holding autoplay — mute and retry.
+  setTimeout(() => { if (playerVideo.paused) muteAndPlay(); }, 2500);
+}
+
 function playHLS(url) {
   // Safari / iOS play HLS natively; everything else needs hls.js.
   if (playerVideo.canPlayType("application/vnd.apple.mpegurl")) {
     playerVideo.src = url;
-    playerVideo.play().catch(() => {});
+    autoplayVideo();
     setPlayerStatus("");
     return { destroy() { playerVideo.removeAttribute("src"); playerVideo.load(); } };
   }
@@ -375,7 +396,7 @@ function playHLS(url) {
       hls = new Hls({ lowLatencyMode: true, enableWorker: true });
       hls.loadSource(url);
       hls.attachMedia(playerVideo);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => { setPlayerStatus(""); playerVideo.play().catch(() => {}); });
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { setPlayerStatus(""); autoplayVideo(); });
       hls.on(Hls.Events.ERROR, (_evt, data) => {
         if (data.fatal) setPlayerStatus("HLS 播放失败：" + (data.details || data.type), true);
       });
@@ -391,6 +412,7 @@ function playHLS(url) {
 function playWebRTC(whepUrl) {
   let pc = null;
   let closed = false;
+  let mediaStarted = false;
   const status = (m, err) => { if (!closed) setPlayerStatus(m, err); };
 
   pc = new RTCPeerConnection({ iceServers: [] });
@@ -398,9 +420,23 @@ function playWebRTC(whepUrl) {
   pc.addTransceiver("audio", { direction: "recvonly" });
   pc.ontrack = (evt) => {
     playerVideo.srcObject = evt.streams[0];
-    playerVideo.play().catch(() => {});
+    const onMedia = () => { mediaStarted = true; };
+    playerVideo.addEventListener("loadeddata", onMedia, { once: true });
+    playerVideo.addEventListener("playing", onMedia, { once: true });
+    autoplayVideo();
     status("");
   };
+
+  // ontrack fires as soon as the track is negotiated, well before any media
+  // arrives. If no frame decodes within ~8s, ICE/DTLS connected but SRTP media
+  // never flowed — the signature of the Docker bridge-NAT failure (the server
+  // can't route WebRTC media back to the browser). Surface it instead of a
+  // frozen black frame.
+  const watchdog = setTimeout(() => {
+    if (!closed && !mediaStarted) {
+      status("未收到画面。WebRTC 在 Docker 默认桥接网络下常因媒体(UDP/DTLS)无法穿越而失败——建议改用 HLS，或将 mediamtx 容器改为 host 网络(network_mode: host)。", true);
+    }
+  }, 8000);
 
   pc.createOffer()
     .then((offer) => pc.setLocalDescription(offer))
@@ -421,6 +457,7 @@ function playWebRTC(whepUrl) {
   return {
     destroy() {
       closed = true;
+      clearTimeout(watchdog);
       if (pc) pc.close();
       playerVideo.srcObject = null;
     },
