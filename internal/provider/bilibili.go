@@ -22,6 +22,27 @@ import (
 
 type bilibiliResolver struct{}
 
+type biliLiveURLInfo struct {
+	Host  string `json:"host"`
+	Extra string `json:"extra"`
+}
+
+type biliLiveCodec struct {
+	CodecName string            `json:"codec_name"`
+	BaseURL   string            `json:"base_url"`
+	URLInfo   []biliLiveURLInfo `json:"url_info"`
+}
+
+type biliLiveFormat struct {
+	FormatName string          `json:"format_name"`
+	Codec      []biliLiveCodec `json:"codec"`
+}
+
+type biliLiveStream struct {
+	ProtocolName string           `json:"protocol_name"`
+	Format       []biliLiveFormat `json:"format"`
+}
+
 var (
 	biliBVRe   = regexp.MustCompile(`(?i)(BV[0-9a-z]+)`)
 	biliAVRe   = regexp.MustCompile(`(?i)av(\d+)`)
@@ -75,7 +96,7 @@ func (b *bilibiliResolver) resolveVideo(ctx context.Context, idKey, id string) (
 	}
 	playURL := "https://api.bilibili.com/x/player/wbi/playurl?" + signWBI(params, mk)
 	var play struct {
-		Code int `json:"code"`
+		Code int    `json:"code"`
 		Msg  string `json:"message"`
 		Data struct {
 			DURL []struct {
@@ -101,22 +122,13 @@ func (b *bilibiliResolver) resolveVideo(ctx context.Context, idKey, id string) (
 func (b *bilibiliResolver) resolveLive(ctx context.Context, room string) (*Result, error) {
 	hdrs := headers("https://live.bilibili.com")
 	api := "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo" +
-		"?room_id=" + room + "&protocol=2,3&format=0,1,2&codec=0,1&qn=10000"
+		"?room_id=" + room + "&protocol=2,3&format=0,1,2&codec=0&qn=10000"
 	var info struct {
 		Code int    `json:"code"`
 		Msg  string `json:"message"`
 		Data struct {
 			PlayInfo struct {
-				PlayurlStream []struct {
-					Format []struct {
-						Codec []struct {
-							BaseURL string `json:"base_url"`
-							URLInfo []struct {
-								Host string `json:"host"`
-							} `json:"url_info"`
-						} `json:"codec"`
-					} `json:"format"`
-				} `json:"playurl_stream"`
+				PlayurlStream []biliLiveStream `json:"playurl_stream"`
 			} `json:"playurl_info"`
 		} `json:"data"`
 	}
@@ -126,16 +138,36 @@ func (b *bilibiliResolver) resolveLive(ctx context.Context, room string) (*Resul
 	if info.Code != 0 {
 		return nil, fmt.Errorf("bilibili: live code %d: %s", info.Code, info.Msg)
 	}
-	for _, s := range info.Data.PlayInfo.PlayurlStream {
+	if streamURL := selectBiliLiveURL(info.Data.PlayInfo.PlayurlStream); streamURL != "" {
+		return &Result{URL: streamURL, Headers: hdrs, Live: true}, nil
+	}
+	return nil, fmt.Errorf("bilibili: no live stream url (room may be offline)")
+}
+
+// selectBiliLiveURL prefers the AVC/FLV stream for low-latency remuxing and
+// broad playback compatibility. Bilibili's signed CDN URL requires all three
+// response components: host + base_url + extra.
+func selectBiliLiveURL(streams []biliLiveStream) string {
+	var fallback string
+	for _, s := range streams {
 		for _, f := range s.Format {
 			for _, c := range f.Codec {
-				if c.BaseURL != "" && len(c.URLInfo) > 0 && c.URLInfo[0].Host != "" {
-					return &Result{URL: c.URLInfo[0].Host + c.BaseURL, Headers: hdrs, Live: true}, nil
+				for _, u := range c.URLInfo {
+					if u.Host == "" || c.BaseURL == "" {
+						continue
+					}
+					full := u.Host + c.BaseURL + u.Extra
+					if fallback == "" {
+						fallback = full
+					}
+					if s.ProtocolName == "http_stream" && f.FormatName == "flv" && c.CodecName == "avc" {
+						return full
+					}
 				}
 			}
 		}
 	}
-	return nil, fmt.Errorf("bilibili: no live stream url (room may be offline)")
+	return fallback
 }
 
 // --- WBI signing (https://socialsisteryi.github.io/bilibili-API-collect/docs/misc/sign/wbi.html) ---

@@ -21,10 +21,10 @@ const pollInterval = 5 * time.Second
 
 // Manager coordinates stream processes.
 type Manager struct {
-	store    *store.Store
-	mtx      *mediamtx.Client
-	mtxHost  string
-	log      *slog.Logger
+	store   *store.Store
+	mtx     *mediamtx.Client
+	mtxHost string
+	log     *slog.Logger
 
 	ctx context.Context
 
@@ -202,6 +202,13 @@ func (m *Manager) pollOnce(ctx context.Context) {
 	m.mu.Unlock()
 
 	for _, e := range entries {
+		// A path cannot exist while ffmpeg is stopped, resolving, or waiting to
+		// retry. Skipping the request also avoids MediaMTX logging a noisy API
+		// 404 every five seconds for a stream that has already ended.
+		if e.handle.Snapshot().State != ffmpeg.StateRunning {
+			e.handle.SetMediaMTX(false, 0)
+			continue
+		}
 		ps, err := m.mtx.GetPath(ctx, e.stream.Name)
 		if err != nil {
 			// Best-effort: keep the last cached value; never act on errors here.

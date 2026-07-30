@@ -39,20 +39,20 @@ type Status struct {
 
 // Supervision tunables.
 const (
-	staleTimeout   = 15 * time.Second // no ffmpeg output for this long => frozen source
-	checkEvery     = 3 * time.Second
-	maxRestarts    = 8                 // give up after this many consecutive failed restarts
-	baseBackoff    = 2 * time.Second
-	maxBackoff     = 60 * time.Second
-	healthyRunFor  = 2 * maxBackoff    // a run this long resets the restart counter
-	waitDelay      = 10 * time.Second  // SIGTERM->SIGKILL escalation for a stuck group
+	staleTimeout  = 15 * time.Second // no ffmpeg output for this long => frozen source
+	checkEvery    = 3 * time.Second
+	maxRestarts   = 8 // give up after this many consecutive failed restarts
+	baseBackoff   = 2 * time.Second
+	maxBackoff    = 60 * time.Second
+	healthyRunFor = 2 * maxBackoff   // a run this long resets the restart counter
+	waitDelay     = 10 * time.Second // SIGTERM->SIGKILL escalation for a stuck group
 )
 
 // exitKind classifies how an ffmpeg invocation ended.
 type exitKind int
 
 const (
-	exitOK   exitKind = iota // clean exit (e.g. file EOF) — restart only for live sources
+	exitOK   exitKind = iota // clean exit (e.g. file or provider VOD EOF)
 	exitFail                 // error — retry with backoff
 )
 
@@ -97,7 +97,8 @@ func NewHandle(name string, stream model.Stream, mtxHost string, resolve Resolve
 }
 
 // Run launches, watches, and restarts the ffmpeg process until ctx is canceled,
-// the source ends cleanly (non-live only), or maxRestarts is exceeded.
+// a direct non-live source ends cleanly, or maxRestarts is exceeded. Resolved
+// provider VODs are refreshed and replayed after EOF so their pipe stays online.
 func (h *Handle) Run(ctx context.Context) {
 	defer h.setState(StateStopped)
 
@@ -146,9 +147,20 @@ func (h *Handle) Run(ctx context.Context) {
 		switch {
 		case ctx.Err() != nil:
 			return // service shutdown / user stop
-		case classify(waitErr) == exitOK && !live:
+		case classify(waitErr) == exitOK && cleanExitStops(live, h.resolve != nil):
 			h.logger.Info("source ended cleanly; stopping", "source", h.name)
 			return // file finished — do not loop forever
+		case classify(waitErr) == exitOK && !live:
+			// A provider VOD reaching EOF is expected. Resolve it again before
+			// replaying so an expired CDN URL is never reused. This path has no
+			// failure budget; otherwise short videos would stop after 8 loops.
+			h.setState(StateRestarting)
+			h.setLastError("")
+			h.logger.Info("provider VOD ended; refreshing source and replaying")
+			if !h.sleep(ctx, baseBackoff) {
+				return
+			}
+			continue
 		case time.Since(startedAt) >= healthyRunFor:
 			restarts = 0 // ran healthy long enough; forgive prior failures
 		}
@@ -160,6 +172,13 @@ func (h *Handle) Run(ctx context.Context) {
 			return // exceeded max restarts -> state set to error by retry()
 		}
 	}
+}
+
+// cleanExitStops distinguishes a finite direct source (such as an uploaded
+// file) from a provider VOD. Both are non-live, but the provider can resolve a
+// fresh URL and should replay while the stream's desired state remains running.
+func cleanExitStops(live, resolved bool) bool {
+	return !live && !resolved
 }
 
 // retry records an attempt, optionally sleeps with backoff, and reports whether
@@ -304,10 +323,10 @@ func (h *Handle) SetMediaMTX(online bool, readers int) {
 	h.mu.Unlock()
 }
 
-func (h *Handle) setState(s State)       { h.mu.Lock(); h.state = s; h.mu.Unlock() }
-func (h *Handle) setRestartCount(n int)  { h.mu.Lock(); h.restartCount = n; h.mu.Unlock() }
-func (h *Handle) setLastError(s string)  { h.mu.Lock(); h.lastError = s; h.mu.Unlock() }
-func (h *Handle) setHeartbeat()          { h.mu.Lock(); h.lastHeartbeat = time.Now(); h.mu.Unlock() }
+func (h *Handle) setState(s State)      { h.mu.Lock(); h.state = s; h.mu.Unlock() }
+func (h *Handle) setRestartCount(n int) { h.mu.Lock(); h.restartCount = n; h.mu.Unlock() }
+func (h *Handle) setLastError(s string) { h.mu.Lock(); h.lastError = s; h.mu.Unlock() }
+func (h *Handle) setHeartbeat()         { h.mu.Lock(); h.lastHeartbeat = time.Now(); h.mu.Unlock() }
 
 func (h *Handle) sleep(ctx context.Context, d time.Duration) bool {
 	t := time.NewTimer(d)

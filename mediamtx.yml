@@ -35,6 +35,9 @@ authInternalUsers:
       - action: api
 
 # --- Output ports (published by docker-compose) ----------------------------
+# Docker/NAT makes RTSP-over-UDP prone to packet loss and visible corruption.
+# Keep both publishers and readers on the interleaved TCP transport.
+rtspTransports: [tcp]
 rtspAddress: :8554
 rtmpAddress: :1935
 hlsAddress: :8888

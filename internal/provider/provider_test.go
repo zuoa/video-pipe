@@ -2,6 +2,39 @@ package provider
 
 import "testing"
 
+func TestSelectBiliLiveURL(t *testing.T) {
+	streams := []biliLiveStream{
+		{
+			ProtocolName: "http_hls",
+			Format: []biliLiveFormat{{
+				FormatName: "ts",
+				Codec: []biliLiveCodec{{
+					CodecName: "avc",
+					BaseURL:   "/fallback.m3u8",
+					URLInfo:   []biliLiveURLInfo{{Host: "https://hls.example", Extra: "?token=fallback"}},
+				}},
+			}},
+		},
+		{
+			ProtocolName: "http_stream",
+			Format: []biliLiveFormat{{
+				FormatName: "flv",
+				Codec: []biliLiveCodec{{
+					CodecName: "avc",
+					BaseURL:   "/live.flv",
+					URLInfo:   []biliLiveURLInfo{{Host: "https://cdn.example", Extra: "?token=signed"}},
+				}},
+			}},
+		},
+	}
+
+	got := selectBiliLiveURL(streams)
+	want := "https://cdn.example/live.flv?token=signed"
+	if got != want {
+		t.Fatalf("selectBiliLiveURL() = %q, want %q", got, want)
+	}
+}
+
 func TestGet_KnownProviders(t *testing.T) {
 	for _, p := range []string{"bilibili", "douyu"} {
 		if _, ok := Get(p); !ok {
@@ -15,11 +48,11 @@ func TestGet_KnownProviders(t *testing.T) {
 
 func TestDouyuRoomFromURL(t *testing.T) {
 	cases := map[string]string{
-		"https://www.douyu.com/12345":         "12345",
-		"https://www.douyu.com/12345?isHD=1":  "12345",
-		"https://www.douyu.com/9252212":       "9252212",
-		"https://m.douyu.com/9252212":         "9252212",
-		"not a url":                           "",
+		"https://www.douyu.com/12345":        "12345",
+		"https://www.douyu.com/12345?isHD=1": "12345",
+		"https://www.douyu.com/9252212":      "9252212",
+		"https://m.douyu.com/9252212":        "9252212",
+		"not a url":                          "",
 	}
 	for in, want := range cases {
 		if got := douyuRoomFromURL(in); got != want {
