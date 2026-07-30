@@ -1,6 +1,14 @@
 package provider
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+)
 
 func TestSelectBiliLiveURL(t *testing.T) {
 	streams := []biliLiveStream{
@@ -71,25 +79,111 @@ func TestDouyuRealRoomID(t *testing.T) {
 	}
 }
 
-func TestDouyuSign_ExtractsHex(t *testing.T) {
-	// A self-contained signer: the script block holds the var the function uses
-	// and returns a 32-hex sign (real ub98484234 is obfuscated but same shape).
-	page := `<html><script>var vdwdae3xw=[1,2,3];
-		function ub98484234(room, did, tt){
-			var s = vdwdae3xw.join("") ;
-			return "deadbeefdeadbeefdeadbeefdeadbeef&did=" + did + "&tt=" + tt + s;
-		}</script></html>`
-	sign, err := douyuSign(page, "9252212", "abc123def456", "1700000000")
-	if err != nil {
-		t.Fatalf("douyuSign: unexpected error: %v", err)
+func TestDouyuStreamAuth(t *testing.T) {
+	data := douyuEncryptionData{
+		Key:     "secret",
+		RandStr: "random",
+		EncTime: 2,
+		EncData: "opaque",
 	}
-	if want := "deadbeefdeadbeefdeadbeefdeadbeef"; sign != want {
-		t.Errorf("douyuSign = %q, want %q", sign, want)
+	auth, err := douyuStreamAuth(data, "9252212", "1700000000")
+	if err != nil {
+		t.Fatalf("douyuStreamAuth: unexpected error: %v", err)
+	}
+	want := md5Hex(md5Hex(md5Hex("randomsecret")+"secret") + "secret92522121700000000")
+	if auth != want {
+		t.Errorf("douyuStreamAuth = %q, want %q", auth, want)
 	}
 }
 
-func TestDouyuSign_MissingFunction(t *testing.T) {
-	if _, err := douyuSign("<html><body>no script here</body></html>", "1", "d", "t"); err == nil {
-		t.Fatal("douyuSign: expected error when ub98484234 is absent")
+func TestDouyuResolver_CurrentWebFlow(t *testing.T) {
+	const (
+		alias     = "12345"
+		roomID    = "9252212"
+		key       = "secret"
+		randStr   = "random"
+		encData   = "opaque-token"
+		stream    = "live.flv?token=signed"
+		streamCDN = "https://cdn.example/live"
+	)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/"+alias:
+			_, _ = w.Write([]byte(`<script>$ROOM.room_id = ` + roomID + `;</script>`))
+		case r.Method == http.MethodGet && r.URL.Path == "/wgapi/livenc/liveweb/websec/getEncryption":
+			if r.URL.Query().Get("did") == "" {
+				t.Error("getEncryption request has no did")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": 0,
+				"msg":   "ok",
+				"data": map[string]any{
+					"key": key, "rand_str": randStr, "enc_time": 1,
+					"expire_at": 4102444800, "is_special": 0, "enc_data": encData,
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/lapi/live/getH5PlayV1/"+roomID:
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("ParseForm: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			assertDouyuPlayForm(t, r.Form, roomID, key, randStr, encData)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": 0,
+				"msg":   "ok",
+				"data":  map[string]any{"rtmp_url": streamCDN, "rtmp_live": stream},
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	resolver := &douyuResolver{origin: server.URL}
+	got, err := resolver.Resolve(context.Background(), server.URL+"/"+alias)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := streamCDN + "/" + stream; got.URL != want {
+		t.Errorf("Resolve URL = %q, want %q", got.URL, want)
+	}
+	if !got.Live {
+		t.Error("Resolve Live = false, want true")
+	}
+	if got.Headers["Referer"] != server.URL+"/"+alias {
+		t.Errorf("Resolve Referer = %q", got.Headers["Referer"])
+	}
+}
+
+func assertDouyuPlayForm(t *testing.T, form url.Values, roomID, key, randStr, encData string) {
+	t.Helper()
+	tt := form.Get("tt")
+	if tt == "" {
+		t.Error("getH5PlayV1 request has no tt")
+	}
+	if form.Get("did") == "" {
+		t.Error("getH5PlayV1 request has no did")
+	}
+	wantAuth := md5Hex(md5Hex(randStr+key) + key + roomID + tt)
+	checks := map[string]string{
+		"enc_data": encData,
+		"auth":     wantAuth,
+		"ver":      "Douyu_new",
+		"rate":     "-1",
+		"hevc":     "0",
+		"fa":       "0",
+		"ive":      "0",
+	}
+	for key, want := range checks {
+		if got := form.Get(key); got != want {
+			t.Errorf("getH5PlayV1 form %s = %q, want %q", key, got, want)
+		}
+	}
+	if got := form.Encode(); !strings.Contains(got, "cdn=") {
+		t.Errorf("getH5PlayV1 form is missing empty cdn: %q", got)
 	}
 }

@@ -1,19 +1,15 @@
 package provider
 
 // EXPERIMENTAL. Douyu live stream resolution is self-implemented (there is no
-// clean importable Go library for it). It requires Douyu's `getH5Play` *sign*,
-// computed by the page's obfuscated `ub98484234` JS function. We extract that
-// function from the room page and evaluate it with goja (a pure-Go JS engine)
-// so we don't have to re-derive the algorithm ourselves.
-//
-// Because Douyu changes the page/algorithm periodically, the regexes below are
-// the single point most likely to need adjustment; validate against a real room.
+// clean importable Go library for it). Douyu's current web player first obtains
+// a short-lived encryption key, computes an MD5-based auth value, and then calls
+// getH5PlayV1. Keep this flow aligned with the web player when Douyu changes it.
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -21,50 +17,66 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/dop251/goja"
 )
 
-type douyuResolver struct{}
+const douyuOrigin = "https://www.douyu.com"
+
+type douyuResolver struct {
+	// origin is overridden by tests. Production uses douyuOrigin.
+	origin string
+}
 
 func (d *douyuResolver) Resolve(ctx context.Context, pageURL string) (*Result, error) {
 	room := douyuRoomFromURL(pageURL)
 	if room == "" {
 		return nil, fmt.Errorf("douyu: could not read a room id from %q", pageURL)
 	}
-	referer := "https://www.douyu.com/" + room
+	origin := d.origin
+	if origin == "" {
+		origin = douyuOrigin
+	}
+	origin = strings.TrimRight(origin, "/")
+	referer := origin + "/" + room
 	hdrs := headers(referer)
 
 	did := randomDid()
 	tt := strconv.FormatInt(time.Now().Unix(), 10)
 
-	// 1) Fetch the room page HTML (it contains the real room id + ub98484234).
-	html, err := fetchText(ctx, "https://www.douyu.com/"+room, hdrs)
+	// Fetch the room page to resolve numeric aliases to the canonical room id.
+	html, err := fetchText(ctx, referer, hdrs)
 	if err != nil {
 		return nil, fmt.Errorf("douyu: fetch room page: %w", err)
 	}
 	realRoom := douyuRealRoomID(html, room)
 
-	// 2) Compute the sign by evaluating the page's ub98484234 function.
-	sign, err := douyuSign(html, realRoom, did, tt)
+	// The encryption response is tied to the device id and user agent, so all
+	// requests in this flow intentionally use the same values.
+	encryptionURL := origin + "/wgapi/livenc/liveweb/websec/getEncryption?did=" + url.QueryEscape(did)
+	var encryption douyuEncryptionResponse
+	if err := getJSON(ctx, encryptionURL, hdrs, &encryption); err != nil {
+		return nil, fmt.Errorf("douyu: get encryption key: %w", err)
+	}
+	if encryption.Error != 0 {
+		return nil, fmt.Errorf("douyu: get encryption key: code %d: %s", encryption.Error, encryption.Msg)
+	}
+	auth, err := douyuStreamAuth(encryption.Data, realRoom, tt)
 	if err != nil {
-		return nil, fmt.Errorf("douyu: compute sign: %w", err)
+		return nil, fmt.Errorf("douyu: compute stream auth: %w", err)
 	}
 
-	// 3) Call getH5Play to get the CDN FLV url.
-	var resp struct {
-		Data struct {
-			RtmpURL  string `json:"rtmp_url"`
-			RtmpLive string `json:"rtmp_live"`
-		} `json:"data"`
-		Msg string `json:"msg"`
-	}
+	// Call the current web-player endpoint to get the signed CDN FLV URL.
 	form := url.Values{}
-	form.Set("rate", "0")
+	form.Set("enc_data", encryption.Data.EncData)
 	form.Set("tt", tt)
 	form.Set("did", did)
-	form.Set("sign", sign)
-	apiURL := "https://www.douyu.com/lapi/live/getH5Play/" + realRoom
+	form.Set("auth", auth)
+	form.Set("cdn", "")
+	form.Set("ver", "Douyu_new")
+	form.Set("rate", "-1")
+	form.Set("hevc", "0")
+	form.Set("fa", "0")
+	form.Set("ive", "0")
+	apiURL := origin + "/lapi/live/getH5PlayV1/" + realRoom
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -75,44 +87,77 @@ func (d *douyuResolver) Resolve(ctx context.Context, pageURL string) (*Result, e
 	req.Header.Set("Referer", referer)
 	hresp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("douyu: getH5Play: %w", err)
+		return nil, fmt.Errorf("douyu: getH5PlayV1: %w", err)
 	}
 	defer hresp.Body.Close()
-	if err := decodeBody(hresp, &resp); err != nil {
-		return nil, fmt.Errorf("douyu: decode getH5Play: %w", err)
+	if hresp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("douyu: getH5PlayV1: http %d", hresp.StatusCode)
 	}
-	u := resp.Data.RtmpURL + resp.Data.RtmpLive
+	var resp douyuPlayResponse
+	if err := decodeBody(hresp, &resp); err != nil {
+		return nil, fmt.Errorf("douyu: decode getH5PlayV1: %w", err)
+	}
+	if resp.Error != 0 {
+		return nil, fmt.Errorf("douyu: getH5PlayV1: code %d: %s", resp.Error, resp.Msg)
+	}
+	u := resp.Data.Player1
+	if u == "" && resp.Data.RtmpURL != "" && resp.Data.RtmpLive != "" {
+		u = strings.TrimRight(resp.Data.RtmpURL, "/") + "/" + strings.TrimLeft(resp.Data.RtmpLive, "/")
+	}
 	if u == "" {
 		return nil, fmt.Errorf("douyu: no stream url (room may be offline): %s", resp.Msg)
 	}
 	return &Result{URL: u, Headers: hdrs, Live: true}, nil
 }
 
-// douyuSign evaluates the page's obfuscated ub98484234(roomID, did, tt) function
-// in a goja VM and extracts the 32-hex sign from its return value.
-func douyuSign(pageHTML, roomID, did, tt string) (string, error) {
-	src := extractUB98484234(pageHTML)
-	if src == "" {
-		return "", errors.New("ub98484234 function not found in room page (Douyu layout changed?)")
+type douyuEncryptionResponse struct {
+	Error int                 `json:"error"`
+	Msg   string              `json:"msg"`
+	Data  douyuEncryptionData `json:"data"`
+}
+
+type douyuEncryptionData struct {
+	Key       string `json:"key"`
+	RandStr   string `json:"rand_str"`
+	EncTime   int    `json:"enc_time"`
+	ExpireAt  int64  `json:"expire_at"`
+	IsSpecial int    `json:"is_special"`
+	EncData   string `json:"enc_data"`
+}
+
+type douyuPlayResponse struct {
+	Error int    `json:"error"`
+	Msg   string `json:"msg"`
+	Data  struct {
+		RtmpURL  string `json:"rtmp_url"`
+		RtmpLive string `json:"rtmp_live"`
+		Player1  string `json:"player_1"`
+	} `json:"data"`
+}
+
+// douyuStreamAuth mirrors the current web player's stream-signing algorithm:
+// hash rand_str+key enc_time times, then hash key, room id, and timestamp into it.
+func douyuStreamAuth(data douyuEncryptionData, roomID, tt string) (string, error) {
+	if data.Key == "" || data.RandStr == "" || data.EncData == "" {
+		return "", fmt.Errorf("incomplete encryption key response")
 	}
-	vm := goja.New()
-	if _, err := vm.RunString(src); err != nil {
-		return "", fmt.Errorf("eval ub98484234: %w", err)
+	if data.EncTime < 0 || data.EncTime > 1000 {
+		return "", fmt.Errorf("invalid encryption iteration count %d", data.EncTime)
 	}
-	fnVal := vm.Get("ub98484234")
-	fn, ok := goja.AssertFunction(fnVal)
-	if !ok {
-		return "", errors.New("ub98484234 is not callable")
+	auth := data.RandStr
+	for range data.EncTime {
+		auth = md5Hex(auth + data.Key)
 	}
-	ret, err := fn(goja.Undefined(), vm.ToValue(roomID), vm.ToValue(did), vm.ToValue(tt))
-	if err != nil {
-		return "", fmt.Errorf("call ub98484234: %w", err)
+	suffix := ""
+	if data.IsSpecial != 1 {
+		suffix = roomID + tt
 	}
-	out := ret.String()
-	if m := signRe.FindString(out); m != "" {
-		return m, nil
-	}
-	return "", fmt.Errorf("no 32-hex sign in ub98484234 output %q", out)
+	return md5Hex(auth + data.Key + suffix), nil
+}
+
+func md5Hex(s string) string {
+	sum := md5.Sum([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 var (
@@ -120,23 +165,7 @@ var (
 	douyuRoomRe = regexp.MustCompile(`(\d+)/?(?:[\?#].*)?$`)
 	// real room id embedded in the page (Douyu short aliases resolve to these).
 	douyuRealRoomRe = regexp.MustCompile(`(?:\$ROOM\.room_id|"room_id"|\$ROOM\['room_id'\]|data-rid)[^\d]{0,3}(\d{3,})`)
-	// any <script>…</script> block, used to locate the signer function + its deps.
-	scriptRe = regexp.MustCompile(`(?s)<script[^>]*>(.*?)</script>`)
-	// the sign is an MD5 (32 hex chars).
-	signRe = regexp.MustCompile(`[0-9a-f]{32}`)
 )
-
-// extractUB98484234 returns the first <script> block containing the signer
-// function (it also holds the variables ub98484234 depends on). The whole block
-// is evaluated by goja; if Douyu's page layout changes, this is the adjustment point.
-func extractUB98484234(pageHTML string) string {
-	for _, m := range scriptRe.FindAllStringSubmatch(pageHTML, -1) {
-		if strings.Contains(m[1], "ub98484234") {
-			return m[1]
-		}
-	}
-	return ""
-}
 
 func douyuRoomFromURL(u string) string {
 	if m := douyuRoomRe.FindStringSubmatch(u); m != nil {
