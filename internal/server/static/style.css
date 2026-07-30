@@ -519,6 +519,113 @@ button.danger:hover { background: rgba(255, 107, 115, 0.1); }
 	transform: translateX(-50%) translateY(0);
 }
 
+/* Inline player modal ----------------------------------------------------- */
+button.mini.play {
+	border-color: rgba(88, 166, 255, 0.45);
+	color: #9ac8ff;
+}
+
+button.mini.play:hover {
+	border-color: var(--accent);
+	background: var(--accent-soft);
+	color: var(--ink);
+}
+
+.modal {
+	position: fixed;
+	inset: 0;
+	z-index: 50;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+}
+
+.modal-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(3, 6, 11, 0.78);
+	backdrop-filter: blur(3px);
+	-webkit-backdrop-filter: blur(3px);
+}
+
+.modal-panel {
+	position: relative;
+	z-index: 1;
+	width: min(960px, 100%);
+	max-height: calc(100vh - 48px);
+	overflow: hidden;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--panel);
+	box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
+}
+
+.modal-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--border-soft);
+}
+
+.modal-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: #cdd8e6;
+	font: 600 13px/1 var(--mono);
+}
+
+.modal-close {
+	width: 28px;
+	height: 28px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--panel-raised);
+	color: #aeb9c8;
+	font-size: 13px;
+	line-height: 1;
+}
+
+.modal-close:hover {
+	border-color: #3b485d;
+	background: #1a2230;
+	color: var(--ink);
+}
+
+/* 16:9 stage holds the video and the status overlay, so the modal keeps a
+   stable shape even before the first frame is decoded. */
+.modal-stage {
+	position: relative;
+	aspect-ratio: 16 / 9;
+	background: #000;
+}
+
+.modal-stage video {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	background: #000;
+	object-fit: contain;
+}
+
+.player-status {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 20px;
+	color: var(--muted);
+	font-size: 13px;
+	text-align: center;
+	pointer-events: none;
+}
+
+.player-status.err { color: var(--red); }
+
 @media (max-width: 1050px) {
 	.create-card { grid-template-columns: 1fr; }
 	.section-heading { border-right: 0; border-bottom: 1px solid var(--border-soft); }

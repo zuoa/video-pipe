@@ -141,13 +141,22 @@ function statusBadge(s) {
   return `<span class="dot ${cls}"></span>${label}`;
 }
 
-function urlRows(urls) {
+// Protocols a browser can play inline (HLS via hls.js / native; WebRTC via
+// WHEP). RTSP/RTMP/SRT have no browser player, so they get no play button.
+const PLAYABLE = { hls: true, webrtc: true };
+
+function urlRows(urls, name) {
   return ["rtsp", "rtmp", "hls", "webrtc", "srt"]
     .map((k) => {
       const u = urls[k] || "";
+      const play = PLAYABLE[k] && u
+        ? `<button class="mini play" data-play data-proto="${k}"` +
+          ` data-url="${esc(u)}" data-name="${esc(name)}">播放</button>`
+        : "";
       return `<div class="u"><span class="proto">${k.toUpperCase()}</span>` +
         `<code title="${esc(u)}">${esc(u)}</code>` +
-        `<button class="mini" data-copy="${esc(u)}">复制</button></div>`;
+        `<button class="mini" data-copy="${esc(u)}">复制</button>` +
+        play + `</div>`;
     })
     .join("");
 }
@@ -169,7 +178,7 @@ function render(streams) {
         <td class="src" title="${esc(s.source_url)}">${esc(s.source_url || "(test pattern)")}</td>
         <td>${s.restart_count}</td>
         <td>${s.readers}</td>
-        <td>${urlRows(s.urls)}</td>
+        <td>${urlRows(s.urls, s.name)}</td>
         <td class="actions">
           <button class="mini" data-action="start" data-name="${name}" ${canStart ? "" : "disabled"}>启动</button>
           <button class="mini" data-action="stop" data-name="${name}" ${canStop ? "" : "disabled"}>停止</button>
@@ -222,8 +231,13 @@ function legacyCopy(text) {
   return ok;
 }
 
-// Event delegation for copy / start / stop / delete buttons.
+// Event delegation for copy / start / stop / delete / play buttons.
 body.addEventListener("click", async (e) => {
+  const play = e.target.closest("[data-play]");
+  if (play) {
+    openPlayer(play.getAttribute("data-name"), play.getAttribute("data-proto"), play.getAttribute("data-url"));
+    return;
+  }
   const cp = e.target.closest("[data-copy]");
   if (cp) {
     await copy(cp.getAttribute("data-copy"));
@@ -292,3 +306,143 @@ function toast(msg) {
 
 refresh();
 setInterval(refresh, 5000);
+
+// ---------------------------------------------------------------------------
+// Inline player modal: plays HLS (hls.js, or native on Safari/iOS) and WebRTC
+// (minimal WHEP — POST a full SDP offer to the stream's /whep endpoint, apply
+// the answer). hls.js is vendored at /static/hls.min.js and loaded on demand so
+// the listing page stays light and works on a browser with no internet.
+// ---------------------------------------------------------------------------
+
+const modal = document.getElementById("player-modal");
+const modalTitle = document.getElementById("player-title");
+const playerVideo = document.getElementById("player-video");
+const playerStatus = document.getElementById("player-status");
+let activePlayer = null; // { destroy() } for the current playback, or null
+
+function setPlayerStatus(msg, isErr) {
+  if (!msg) { playerStatus.hidden = true; playerStatus.textContent = ""; return; }
+  playerStatus.hidden = false;
+  playerStatus.textContent = msg;
+  playerStatus.classList.toggle("err", !!isErr);
+}
+
+function openPlayer(name, proto, baseUrl) {
+  closePlayer();
+  modalTitle.textContent = `${name} · ${proto.toUpperCase()}`;
+  setPlayerStatus(proto === "webrtc" ? "正在建立 WebRTC 连接…" : "正在加载 HLS…");
+  modal.hidden = false;
+  document.body.style.overflow = "hidden";
+  if (proto === "hls") activePlayer = playHLS(baseUrl);
+  else if (proto === "webrtc") activePlayer = playWebRTC(baseUrl.replace(/\/$/, "") + "/whep");
+}
+
+function closePlayer() {
+  if (activePlayer) { try { activePlayer.destroy(); } catch {} activePlayer = null; }
+  modal.hidden = true;
+  document.body.style.overflow = "";
+  setPlayerStatus("");
+}
+
+// hls.js is loaded once, on first HLS playback, then cached on window.Hls.
+let hlsJsPromise = null;
+function loadHlsJs() {
+  if (window.Hls) return Promise.resolve(window.Hls);
+  if (!hlsJsPromise) {
+    hlsJsPromise = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "/static/hls.min.js";
+      s.onload = () => resolve(window.Hls);
+      s.onerror = () => { hlsJsPromise = null; reject(new Error("播放库 hls.js 加载失败")); };
+      document.head.appendChild(s);
+    });
+  }
+  return hlsJsPromise;
+}
+
+function playHLS(url) {
+  // Safari / iOS play HLS natively; everything else needs hls.js.
+  if (playerVideo.canPlayType("application/vnd.apple.mpegurl")) {
+    playerVideo.src = url;
+    playerVideo.play().catch(() => {});
+    setPlayerStatus("");
+    return { destroy() { playerVideo.removeAttribute("src"); playerVideo.load(); } };
+  }
+  let hls = null;
+  loadHlsJs()
+    .then((Hls) => {
+      if (!Hls.isSupported()) { setPlayerStatus("当前浏览器不支持 HLS 播放", true); return; }
+      hls = new Hls({ lowLatencyMode: true, enableWorker: true });
+      hls.loadSource(url);
+      hls.attachMedia(playerVideo);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { setPlayerStatus(""); playerVideo.play().catch(() => {}); });
+      hls.on(Hls.Events.ERROR, (_evt, data) => {
+        if (data.fatal) setPlayerStatus("HLS 播放失败：" + (data.details || data.type), true);
+      });
+    })
+    .catch((e) => setPlayerStatus(e.message, true));
+  return { destroy() { if (hls) hls.destroy(); playerVideo.removeAttribute("src"); playerVideo.load(); } };
+}
+
+// Minimal WHEP reader: gather all ICE candidates into the offer (non-trickle),
+// POST it, apply the answer. No STUN — on a LAN the server's host candidate
+// (configured via webrtcAdditionalHosts) and the browser's host candidate
+// connect directly.
+function playWebRTC(whepUrl) {
+  let pc = null;
+  let closed = false;
+  const status = (m, err) => { if (!closed) setPlayerStatus(m, err); };
+
+  pc = new RTCPeerConnection({ iceServers: [] });
+  pc.addTransceiver("video", { direction: "recvonly" });
+  pc.addTransceiver("audio", { direction: "recvonly" });
+  pc.ontrack = (evt) => {
+    playerVideo.srcObject = evt.streams[0];
+    playerVideo.play().catch(() => {});
+    status("");
+  };
+
+  pc.createOffer()
+    .then((offer) => pc.setLocalDescription(offer))
+    .then(() => waitForIce(pc))
+    .then(() => fetch(whepUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/sdp" },
+      body: pc.localDescription.sdp,
+    }))
+    .then((res) => {
+      if (res.status === 404) throw new Error("流不在线或不存在");
+      if (!res.ok) throw new Error("信令失败 (HTTP " + res.status + ")");
+      return res.text();
+    })
+    .then((answer) => pc.setRemoteDescription({ type: "answer", sdp: answer }))
+    .catch((err) => { if (!closed) status("WebRTC 播放失败：" + err.message, true); });
+
+  return {
+    destroy() {
+      closed = true;
+      if (pc) pc.close();
+      playerVideo.srcObject = null;
+    },
+  };
+}
+
+// Resolve once ICE gathering is complete (candidates are in the local SDP), or
+// after a timeout so a stalled gather can't hang playback forever.
+function waitForIce(pc) {
+  return new Promise((resolve) => {
+    if (pc.iceGatheringState === "complete") return resolve();
+    const done = () => {
+      if (pc.iceGatheringState === "complete") {
+        pc.removeEventListener("icegatheringstatechange", done);
+        resolve();
+      }
+    };
+    pc.addEventListener("icegatheringstatechange", done);
+    setTimeout(() => { pc.removeEventListener("icegatheringstatechange", done); resolve(); }, 3000);
+  });
+}
+
+// Close on backdrop / × button / Escape.
+modal.addEventListener("click", (e) => { if (e.target.closest("[data-close]")) closePlayer(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !modal.hidden) closePlayer(); });
