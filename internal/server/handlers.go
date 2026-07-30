@@ -74,7 +74,6 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "index.html", map[string]any{
-		"SourceTypes":  model.ValidSourceTypes,
 		"PlaybackHost": s.cfg.PlaybackHost,
 	}); err != nil {
 		s.log.Error("render index", "err", err)

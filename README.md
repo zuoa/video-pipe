@@ -56,9 +56,9 @@
 
 > 没有 FLV：MediaMTX 不输出 FLV，以上 5 种即全部；浏览器播放用 HLS 或 WebRTC。播放地址里的主机名由 `PLAYBACK_HOST` 决定——本机访问用 `localhost` 即可，远程/LAN 访问请在 `.env` 里把它改成服务器 IP 或域名。
 
-接入真实摄像头：类型选 `auto` 或 `rtsp`，地址填 `rtsp://user:pass@ip:554/...`。本地文件：类型选 `file`，点"选择文件上传…"把视频传上来（落到挂载的 `./data/uploads/`），无需手填路径。
+接入真实摄像头：输入类型选“自动识别”或“RTSP”，地址填 `rtsp://user:pass@ip:554/...`。本地文件：输入类型选“本地文件”后，页面才会显示“选择视频文件”按钮；文件会上传到挂载的 `./data/uploads/`，无需手填路径。
 
-**视频/直播站点（provider）**：来源选 `B站`，地址填 B站视频页（`https://www.bilibili.com/video/BV…`）或直播间（`https://live.bilibili.com/<房间>`）；来源选 `斗鱼(实验)`，地址填 `https://www.douyu.com/<房间号>`。后端会自动把页面/房间地址解析成 CDN 直链再转封装：
+**视频/直播站点（provider）**：输入类型直接选 `B站`，地址填 B站视频页（`https://www.bilibili.com/video/BV…`）或直播间（`https://live.bilibili.com/<房间>`）；选 `斗鱼（实验）` 时，地址填 `https://www.douyu.com/<房间号>`。页面不再单独展示“来源”字段，后端仍会自动把页面/房间地址解析成 CDN 直链再转封装：
 
 - B站解析复用 [synctv-org/vendors](https://github.com/synctv-org/vendors) 库（含 WBI 签名）；**斗鱼为实验性自研解析**（依赖站点的 `sign` 算法，可能随站点改版失效，需按真实房间联调）。
 - 未带登录 cookie，只能拿到公开清晰度（通常标清/流畅）；HD/会员内容暂不可用。

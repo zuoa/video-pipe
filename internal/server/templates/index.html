@@ -9,52 +9,93 @@
 	<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-	<header>
-		<h1>video-pipe</h1>
-		<p class="sub">多协议流转换网关 · MediaMTX 主机：<code>{{.PlaybackHost}}</code></p>
+	<header class="topbar">
+		<div class="brand">
+			<span class="brand-mark" aria-hidden="true">VP</span>
+			<div>
+				<h1>video-pipe</h1>
+				<p>多协议流转换网关</p>
+			</div>
+		</div>
+		<div class="host">
+			<span class="host-dot" aria-hidden="true"></span>
+			<span>播放主机</span>
+			<code>{{.PlaybackHost}}</code>
+		</div>
 	</header>
 
 	<main>
-		<section class="card">
-			<h2>新增流</h2>
-			<form id="create-form" autocomplete="off">
-				<label>
-					<span>名称</span>
+		<section class="card create-card">
+			<div class="section-heading">
+				<div>
+					<p class="eyebrow">NEW PIPE</p>
+					<h2>接入一路视频流</h2>
+					<p class="section-desc">选择输入类型，系统会自动准备对应的接入方式。</p>
+				</div>
+			</div>
+			<form id="create-form" class="create-form" autocomplete="off">
+				<label class="field field-name">
+					<span class="field-label">流名称</span>
 					<input name="name" required pattern="[a-z0-9][a-z0-9_\-]{0,63}"
-						placeholder="如 cam01（小写字母/数字/-/_）">
+						placeholder="例如 camera_01">
+					<small>小写字母、数字、- 或 _</small>
 				</label>
-				<label>
-					<span>来源</span>
-					<select name="provider" id="provider">
-						<option value="">直连</option>
-						<option value="bilibili">B站</option>
-						<option value="douyu">斗鱼(实验)</option>
+				<label class="field field-type">
+					<span class="field-label">输入类型</span>
+					<select name="input_type" id="input-type">
+						<optgroup label="视频平台">
+							<option value="provider:bilibili">B站</option>
+							<option value="provider:douyu">斗鱼（实验）</option>
+						</optgroup>
+						<optgroup label="直连与本地">
+							<option value="auto" selected>自动识别</option>
+							<option value="rtsp">RTSP</option>
+							<option value="rtmp">RTMP</option>
+							<option value="http">HTTP / HLS</option>
+							<option value="file">本地文件</option>
+							<option value="test">测试画面</option>
+						</optgroup>
 					</select>
+					<small id="type-help">根据地址自动识别协议</small>
 				</label>
-				<label id="source-type-wrap">
-					<span>类型</span>
-					<select name="source_type" id="source-type">
-						{{range .SourceTypes}}<option value="{{.}}">{{.}}</option>{{end}}
-					</select>
-				</label>
-				<label class="grow" id="source-url-wrap">
-					<span>输入源地址</span>
+				<label class="field field-source" id="source-url-wrap">
+					<span class="field-label" id="source-url-label">输入地址</span>
 					<input name="source_url" id="source-url"
-						placeholder="rtsp://… / rtmp://… / http://…（test 留空；file 请改用上传）">
+						placeholder="粘贴 RTSP、RTMP 或 HTTP 地址" required>
+					<small id="source-url-help">支持 rtsp://、rtmp://、http:// 和 https://</small>
 				</label>
-				<label class="grow" id="source-file-wrap" hidden>
-					<span>源文件</span>
-					<button type="button" id="upload-btn">选择文件上传…</button>
-					<span id="upload-status" class="msg" style="margin:0"></span>
-				</label>
+				<div class="field field-source" id="source-file-wrap" hidden>
+					<span class="field-label">视频文件</span>
+					<button type="button" id="upload-btn" class="upload-btn">
+						<span class="upload-icon" aria-hidden="true">↑</span>
+						<span>选择视频文件</span>
+					</button>
+					<small id="upload-status">选择后将立即上传</small>
+				</div>
+				<div class="field field-source test-note" id="test-note" hidden>
+					<span class="field-label">输入地址</span>
+					<div class="test-note-content">
+						<span class="test-pattern" aria-hidden="true"></span>
+						<span>将生成内置测试画面，无需输入地址</span>
+					</div>
+				</div>
 				<input type="file" id="source-file" accept="video/*" hidden>
-				<button type="submit">创建并启动</button>
+				<button type="submit" class="primary-action" id="create-submit">
+					创建并启动
+					<span aria-hidden="true">→</span>
+				</button>
+				<p id="form-msg" class="msg form-msg" role="status"></p>
 			</form>
-			<p id="form-msg" class="msg"></p>
 		</section>
 
 		<section class="card">
-			<h2>流列表 <span class="muted">每 5 秒自动刷新</span></h2>
+			<div class="table-heading">
+				<div>
+					<p class="eyebrow">ACTIVE PIPES</p>
+					<h2>流列表</h2>
+				</div>
+				<div class="refresh-note"><span></span>每 5 秒自动刷新</div>
+			</div>
 			<div class="table-wrap">
 				<table>
 					<thead>
@@ -70,18 +111,18 @@
 						</tr>
 					</thead>
 					<tbody id="streams-body">
-						<tr><td colspan="8" class="muted">加载中…</td></tr>
+						<tr><td colspan="8" class="empty-cell">正在读取流状态…</td></tr>
 					</tbody>
 				</table>
 			</div>
 		</section>
 
-		<p class="legend">
+		<div class="legend" aria-label="状态说明">
 			<span><span class="dot green"></span>在线</span>
 			<span><span class="dot yellow"></span>推流中/重启中</span>
 			<span><span class="dot red"></span>错误</span>
 			<span><span class="dot grey"></span>已停止</span>
-		</p>
+		</div>
 	</main>
 
 	<script src="/static/app.js"></script>

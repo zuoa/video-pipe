@@ -5,42 +5,62 @@ const body = document.getElementById("streams-body");
 const form = document.getElementById("create-form");
 const formMsg = document.getElementById("form-msg");
 
-// Source UI: a provider (B站/斗鱼) takes a page/room URL; "直连" uses the
-// source_type + URL (or file upload) flow.
-const providerEl = document.getElementById("provider");
-const srcType = document.getElementById("source-type");
-const sourceTypeWrap = document.getElementById("source-type-wrap");
+// The UI intentionally exposes one input type. Provider-backed sources are
+// translated back into the API's provider + source_type fields on submit.
+const inputType = document.getElementById("input-type");
 const srcUrl = document.getElementById("source-url");
 const srcUrlWrap = document.getElementById("source-url-wrap");
-const srcUrlLabel = srcUrlWrap.querySelector("span");
+const srcUrlLabel = document.getElementById("source-url-label");
+const srcUrlHelp = document.getElementById("source-url-help");
+const typeHelp = document.getElementById("type-help");
 const srcFileWrap = document.getElementById("source-file-wrap");
+const testNote = document.getElementById("test-note");
 const srcFile = document.getElementById("source-file");
 const uploadBtn = document.getElementById("upload-btn");
 const uploadStatus = document.getElementById("upload-status");
+const createSubmit = document.getElementById("create-submit");
+
+const typeCopy = {
+  auto: ["根据地址自动识别协议", "输入地址", "粘贴 RTSP、RTMP 或 HTTP 地址", "支持 rtsp://、rtmp://、http:// 和 https://"],
+  rtsp: ["网络摄像机与实时视频源", "RTSP 地址", "rtsp://user:password@host:554/path", "支持 rtsp:// 和 rtsps://"],
+  rtmp: ["直播推流或拉流地址", "RTMP 地址", "rtmp://host/app/stream", "支持 rtmp:// 和 rtmps://"],
+  http: ["HTTP 视频流或 HLS 播放列表", "HTTP / HLS 地址", "https://example.com/live/index.m3u8", "支持 HTTP 视频与 .m3u8 地址"],
+  "provider:bilibili": ["自动解析视频或直播间", "B站地址", "粘贴视频页或直播间地址", "支持 bilibili.com 视频页与 live.bilibili.com 直播间"],
+  "provider:douyu": ["实验性解析直播间", "斗鱼房间地址", "https://www.douyu.com/12345", "粘贴完整的斗鱼直播间地址"],
+  file: ["上传服务器本地播放", "", "", ""],
+  test: ["使用系统内置测试信号", "", "", ""],
+};
+
+let sourceRevision = 0;
 
 function syncSourceUI() {
-  const usingProvider = providerEl.value !== "";
-  const isFile = srcType.value === "file";
+  sourceRevision += 1;
+  const selectedType = inputType.value;
+  const isFile = selectedType === "file";
+  const isTest = selectedType === "test";
+  const copy = typeCopy[selectedType] || typeCopy.auto;
 
-  sourceTypeWrap.hidden = usingProvider;        // provider ignores source_type
-  srcFileWrap.hidden = usingProvider || !isFile; // upload only for direct file
-  srcUrlWrap.hidden = !usingProvider && isFile;  // url hidden only for direct file
+  srcFileWrap.hidden = !isFile;
+  srcUrlWrap.hidden = isFile || isTest;
+  testNote.hidden = !isTest;
+  srcUrl.required = !isFile && !isTest;
 
-  if (usingProvider) {
-    srcUrlLabel.textContent = providerEl.value === "douyu" ? "斗鱼房间地址" : "B站视频/直播地址";
-    srcUrl.placeholder = providerEl.value === "douyu"
-      ? "如 https://www.douyu.com/12345"
-      : "如 https://www.bilibili.com/video/BV… 或 live.bilibili.com/<房间>";
-  } else {
-    srcUrlLabel.textContent = "输入源地址";
-    srcUrl.placeholder = "rtsp://… / rtmp://… / http://…（test 留空；file 请改用上传）";
+  typeHelp.textContent = copy[0];
+  if (!isFile && !isTest) {
+    srcUrlLabel.textContent = copy[1];
+    srcUrl.placeholder = copy[2];
+    srcUrlHelp.textContent = copy[3];
   }
+
   srcUrl.value = ""; // changing source invalidates the previous entry
+  srcFile.value = "";
   uploadStatus.textContent = "";
-  uploadStatus.className = "msg";
+  uploadStatus.className = "";
+  if (isFile) uploadStatus.textContent = "选择后将立即上传";
+  uploadBtn.disabled = false;
+  createSubmit.disabled = isFile;
 }
-providerEl.addEventListener("change", syncSourceUI);
-srcType.addEventListener("change", syncSourceUI);
+inputType.addEventListener("change", syncSourceUI);
 syncSourceUI();
 
 uploadBtn.addEventListener("click", () => srcFile.click());
@@ -48,20 +68,28 @@ uploadBtn.addEventListener("click", () => srcFile.click());
 srcFile.addEventListener("change", async () => {
   const file = srcFile.files[0];
   if (!file) return;
+  const uploadRevision = sourceRevision;
   uploadStatus.textContent = "上传中…";
-  uploadStatus.className = "msg";
+  uploadStatus.className = "";
+  uploadBtn.disabled = true;
+  createSubmit.disabled = true;
   const fd = new FormData();
   fd.append("file", file);
   try {
     const res = await fetch("/api/uploads", { method: "POST", body: fd });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    if (uploadRevision !== sourceRevision || inputType.value !== "file") return;
     srcUrl.value = data.path; // hidden holder the submit handler reads
     uploadStatus.textContent = `${file.name}（${formatSize(data.size)}）已就绪`;
-    uploadStatus.className = "msg ok";
+    uploadStatus.className = "ok";
+    createSubmit.disabled = false;
   } catch (e) {
+    if (uploadRevision !== sourceRevision || inputType.value !== "file") return;
     uploadStatus.textContent = "上传失败：" + e.message;
-    uploadStatus.className = "msg err";
+    uploadStatus.className = "err";
+  } finally {
+    uploadBtn.disabled = false;
   }
 });
 
@@ -90,8 +118,15 @@ function esc(s) {
 
 function typeLabel(s) {
   if (s.provider === "bilibili") return "B站";
-  if (s.provider === "douyu") return "斗鱼(实验)";
-  return esc(s.source_type);
+  if (s.provider === "douyu") return "斗鱼（实验）";
+  const labels = {
+    file: "本地文件",
+    rtsp: "RTSP",
+    rtmp: "RTMP",
+    http: "HTTP / HLS",
+    test: "测试画面",
+  };
+  return labels[s.source_type] || esc(s.source_type);
 }
 
 function statusBadge(s) {
@@ -119,7 +154,7 @@ function urlRows(urls) {
 
 function render(streams) {
   if (!streams.length) {
-    body.innerHTML = `<tr><td colspan="8" class="muted">还没有流，先在上方创建一路吧（类型选 test 可免输入源做冒烟测试）</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="empty-cell">还没有流。可以先创建一路“测试画面”检查服务状态。</td></tr>`;
     return;
   }
   body.innerHTML = streams
@@ -215,11 +250,13 @@ form.addEventListener("submit", async (e) => {
   formMsg.textContent = "";
   formMsg.className = "msg";
   const fd = new FormData(form);
+  const selectedType = fd.get("input_type");
+  const provider = selectedType.startsWith("provider:") ? selectedType.split(":")[1] : "";
   const payload = {
     name: fd.get("name"),
-    source_url: fd.get("source_url"),
-    source_type: fd.get("source_type"),
-    provider: fd.get("provider") || "",
+    source_url: srcUrl.value,
+    source_type: provider ? "http" : selectedType,
+    provider,
   };
   if (!payload.provider && payload.source_type === "file" && !payload.source_url) {
     formMsg.textContent = "请先选择并上传文件";
