@@ -136,8 +136,10 @@ func TestDouyuResolver_CurrentWebFlow(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/"+alias:
-			_, _ = w.Write([]byte(`<script>$ROOM.room_id = ` + roomID + `;</script>`))
+		case r.Method == http.MethodGet && r.URL.Path == "/betard/"+alias:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"room": map[string]any{"room_id": roomID},
+			})
 		case r.Method == http.MethodGet && r.URL.Path == "/wgapi/livenc/liveweb/websec/getEncryption":
 			if r.URL.Query().Get("did") == "" {
 				t.Error("getEncryption request has no did")

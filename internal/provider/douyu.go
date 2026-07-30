@@ -44,12 +44,13 @@ func (d *douyuResolver) Resolve(ctx context.Context, pageURL string) (*Result, e
 	did := randomDid()
 	tt := strconv.FormatInt(time.Now().Unix(), 10)
 
-	// Fetch the room page to resolve numeric aliases to the canonical room id.
-	html, err := fetchText(ctx, referer, hdrs)
+	// getH5PlayV1 only accepts the canonical room id. Numeric vanity ids and
+	// aliases must first be resolved through the same room metadata endpoint
+	// used by Douyu's web application.
+	realRoom, err := douyuCanonicalRoomID(ctx, origin, referer, room, hdrs)
 	if err != nil {
-		return nil, fmt.Errorf("douyu: fetch room page: %w", err)
+		return nil, fmt.Errorf("douyu: resolve room id: %w", err)
 	}
-	realRoom := douyuRealRoomID(html, room)
 
 	// The encryption response is tied to the device id and user agent, so all
 	// requests in this flow intentionally use the same values.
@@ -100,7 +101,10 @@ func (d *douyuResolver) Resolve(ctx context.Context, pageURL string) (*Result, e
 		return nil, fmt.Errorf("douyu: decode getH5PlayV1: %w", err)
 	}
 	if resp.Error != 0 {
-		return nil, fmt.Errorf("douyu: getH5PlayV1: code %d: %s", resp.Error, resp.Msg)
+		return nil, fmt.Errorf(
+			"douyu: getH5PlayV1: code %d for room %s (input %s): %s",
+			resp.Error, realRoom, room, resp.Msg,
+		)
 	}
 	play, err := resp.playData()
 	if err != nil {
@@ -120,6 +124,12 @@ type douyuEncryptionResponse struct {
 	Error int                 `json:"error"`
 	Msg   string              `json:"msg"`
 	Data  douyuEncryptionData `json:"data"`
+}
+
+type douyuRoomInfoResponse struct {
+	Room struct {
+		RoomID json.RawMessage `json:"room_id"`
+	} `json:"room"`
 }
 
 type douyuEncryptionData struct {
@@ -201,6 +211,44 @@ func douyuStreamAuth(data douyuEncryptionData, roomID, tt string) (string, error
 func md5Hex(s string) string {
 	sum := md5.Sum([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+func douyuCanonicalRoomID(
+	ctx context.Context,
+	origin, referer, room string,
+	hdrs map[string]string,
+) (string, error) {
+	var info douyuRoomInfoResponse
+	infoErr := getJSON(ctx, origin+"/betard/"+url.PathEscape(room), hdrs, &info)
+	if infoErr == nil {
+		if canonical := numericJSONValue(info.Room.RoomID); canonical != "" {
+			return canonical, nil
+		}
+		infoErr = fmt.Errorf("room metadata has no room_id")
+	}
+
+	// Keep a page-data fallback for regional edges where /betard is unavailable.
+	html, pageErr := fetchText(ctx, referer, hdrs)
+	if pageErr == nil {
+		if canonical := douyuRealRoomID(html, ""); canonical != "" {
+			return canonical, nil
+		}
+		pageErr = fmt.Errorf("room page has no canonical room_id")
+	}
+	return "", fmt.Errorf("metadata: %v; page fallback: %v", infoErr, pageErr)
+}
+
+func numericJSONValue(raw json.RawMessage) string {
+	value := strings.Trim(string(bytes.TrimSpace(raw)), `"`)
+	if value == "" {
+		return ""
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return value
 }
 
 var (
