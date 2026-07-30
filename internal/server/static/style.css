@@ -296,6 +296,23 @@ select:focus {
 	opacity: 0.75;
 }
 
+/* Batch-count control inside the test-source note: compact number input so it
+   fits the 42px dashed row without growing it. */
+.test-batch {
+	display: flex;
+	margin-left: auto;
+	align-items: center;
+	gap: 6px;
+	white-space: nowrap;
+}
+
+.test-batch input {
+	width: 62px;
+	height: 28px;
+	padding: 0 6px;
+	text-align: center;
+}
+
 .primary-action {
 	display: flex;
 	height: 42px;
