@@ -75,6 +75,12 @@ func indexOf(args []string, v string) int {
 	return -1
 }
 func containsPair(args []string, k, v string) bool {
-	i := indexOf(args, k)
-	return i >= 0 && i+1 < len(args) && args[i+1] == v
+	// Scan ALL positions: a flag like -f can legitimately appear twice
+	// (e.g. test source uses -f lavfi for input AND -f rtsp for output).
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == k && args[i+1] == v {
+			return true
+		}
+	}
+	return false
 }
