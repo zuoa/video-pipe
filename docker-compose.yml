@@ -34,7 +34,7 @@ services:
       MEDIAMTX_HOST: "mediamtx"              # host ffmpeg pushes RTSP to
       MEDIAMTX_USER: "wrapper"               # must match authInternalUsers in mediamtx.yml
       MEDIAMTX_PASS: "change-me"
-      PLAYBACK_HOST: "localhost"             # host browsers use to reach MediaMTX
+      PLAYBACK_HOST: "${PLAYBACK_HOST:-localhost}"  # override in .env; host browsers use to reach MediaMTX
     ports:
       - "8080:8080"
     volumes:

@@ -18,6 +18,11 @@ import (
 //   - http:   libavformat reconnect options for transient failures
 //   - test:   an FFmpeg lavfi test pattern (no external source needed)
 //
+// Only the first video and first audio stream are mapped (`-map 0:v:0? -map 0:a:0?`)
+// so stray tracks (data/subtitle/extra audio) do not end up in the output SDP
+// without an RTP clock rate; the trailing "?" keeps video-only or audio-only
+// sources working.
+//
 // `-progress pipe:1` writes machine-readable key=value blocks to stdout so the
 // supervisor can use `progress=continue` as a data-flow heartbeat; with
 // `-nostats -loglevel warning` stderr carries only real log/error lines.
@@ -41,7 +46,14 @@ func BuildArgs(s model.Stream, mediamtxHost string) []string {
 		args = append(args, "-re", "-i", s.SourceURL)
 	}
 
+	// Map exactly the first video and first audio stream. Without -map, ffmpeg
+	// copies EVERY track from the source; stray data/subtitle/extra-audio tracks
+	// end up in the output SDP with no RTP clock rate, which MediaMTX rejects
+	// ("invalid SDP: media N is invalid: clock rate not found"). The trailing "?"
+	// makes each map optional, so video-only (e.g. testsrc) or audio-only sources
+	// still work.
 	args = append(args,
+		"-map", "0:v:0?", "-map", "0:a:0?",
 		"-c:v", "copy", "-c:a", "copy",
 		"-f", "rtsp", "-rtsp_transport", "tcp", out,
 		"-progress", "pipe:1",

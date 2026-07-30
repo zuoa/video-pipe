@@ -65,6 +65,23 @@ func TestBuildArgs_RTSPTransportBeforeInput(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_MapsSingleVideoAndAudio(t *testing.T) {
+	args := BuildArgs(stream(model.SourceRTSP, "rtsp://cam/stream"), "mediamtx")
+	if !containsPair(args, "-map", "0:v:0?") {
+		t.Errorf("must optionally map first video (-map 0:v:0?); got %v", args)
+	}
+	if !containsPair(args, "-map", "0:a:0?") {
+		t.Errorf("must optionally map first audio (-map 0:a:0?); got %v", args)
+	}
+	// -map must sit after the input (-i) and before the codecs (-c:v).
+	i := indexOf(args, "-i")
+	m := indexOf(args, "-map")
+	cv := indexOf(args, "-c:v")
+	if i == -1 || m == -1 || cv == -1 || !(i < m && m < cv) {
+		t.Errorf("expected -i < -map < -c:v; got i=%d map=%d cv=%d args=%v", i, m, cv, args)
+	}
+}
+
 func contains(args []string, v string) bool        { return indexOf(args, v) >= 0 }
 func indexOf(args []string, v string) int {
 	for i, a := range args {

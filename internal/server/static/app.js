@@ -82,12 +82,37 @@ async function refresh() {
 }
 
 async function copy(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast("已复制");
-  } catch {
-    toast("复制失败，请手动选择");
+  // navigator.clipboard requires a secure context (HTTPS or http://localhost).
+  // A deployment reached over plain HTTP on a LAN IP / remote host has no
+  // clipboard API, so fall back to a hidden textarea + execCommand.
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("已复制");
+      return;
+    } catch {
+      // fall through to legacy path
+    }
   }
+  toast(legacyCopy(text) ? "已复制" : "复制失败，请手动选择");
+}
+
+// legacyCopy copies text via a transient textarea + execCommand('copy'). Returns
+// false when the browser blocks it; used as the non-secure-context fallback.
+function legacyCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length); // iOS Safari
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
 }
 
 // Event delegation for copy / start / stop / delete buttons.
