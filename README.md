@@ -67,9 +67,9 @@
 
 ## 输出协议（可选）
 
-MediaMTX 对每个流默认开 RTSP/RTMP/HLS/WebRTC/SRT 全部 5 种。设置环境变量 `ENABLE_RTSP` / `ENABLE_RTMP` / `ENABLE_HLS` / `ENABLE_WEBRTC` / `ENABLE_SRT` 为 `0`/`false`/`no` 可让 UI/API **不再展示**该协议的播放地址（默认全开）。要真正在 MediaMTX 侧关闭某协议（省资源/更干净），还需在 `mediamtx.yml` 里把该协议设为 `no`（如 `hls: no`、`webrtc: no`）；mediamtx 使用 host 网络，端口直接绑定在宿主机，无需在 compose 里单独发布。
+MediaMTX 对每个流默认开 RTSP/RTMP/HLS/WebRTC/SRT 全部 5 种。设置环境变量 `ENABLE_RTSP` / `ENABLE_RTMP` / `ENABLE_HLS` / `ENABLE_WEBRTC` / `ENABLE_SRT` 为 `0`/`false`/`no` 可让 UI/API **不再展示**该协议的播放地址（默认全开）。要真正在 MediaMTX 侧关闭某协议（省资源/更干净），还需在 `mediamtx.yml` 里把该协议设为 `no`（如 `hls: no`、`webrtc: no`），并取消 `docker-compose.yml` 里对应端口的发布。
 
-> **WebRTC 需要 host 网络**：WebRTC 的媒体面（DTLS/SRTP，大 UDP 包/分片）无法稳定穿越 Docker 默认桥接 NAT——信令通了、ICE 也连上了，但 DTLS 握手完不成，浏览器永远等不到画面（MediaMTX 自带的 `/read` 页在桥接网络下同样放不出来）。因此 `docker-compose.yml` 里 mediamtx 服务用 `network_mode: host`，这要求部署机是 **Linux 原生 Docker**（macOS/Windows 的 Docker Desktop 不支持容器 host 网络）。HLS 不受此影响，桥接/host 网络都能正常播放。
+> **浏览器播放用 HLS；浏览器内的 WebRTC 需要额外配置**。默认桥接网络下 RTSP/RTMP/HLS/SRT 都正常（Docker 发布端口会绕过宿主机防火墙）。但 WebRTC 的媒体面（DTLS/SRTP，大 UDP 包/分片）无法穿越 Docker 桥接 NAT——信令通了、ICE 也连上了，DTLS 握手却完不成，浏览器永远等不到画面（MediaMTX 自带的 `/read` 页在桥接网络下同样放不出来）。要让浏览器内 WebRTC 可用，需要把 `docker-compose.yml` 里 mediamtx 服务改为 `network_mode: host`（仅 **Linux 原生 Docker** 支持，macOS/Windows 的 Docker Desktop 不支持），**并在宿主机防火墙放行对应端口**：host 网络不再走 Docker 的端口发布（也就不再绕过 `ufw`/firewalld），而是直接受宿主机 INPUT 规则约束。切换后浏览器播放至少需放行 `8888/tcp`(HLS)、`8889/tcp`(WebRTC 信令)、`8189/udp`(WebRTC 媒体)，RTSP/RTMP/SRT 还需 `8554/tcp`、`1935/tcp`、`8890/udp`；云主机还要在安全组同步放行。若不想动防火墙，保持桥接网络、浏览器用 HLS 播放即可（推荐）。
 
 ## 配置（环境变量）
 
@@ -79,8 +79,8 @@ MediaMTX 对每个流默认开 RTSP/RTMP/HLS/WebRTC/SRT 全部 5 种。设置环
 |---|---|---|
 | `ADDR` | `:8080` | 管理 API/UI 监听地址 |
 | `DB_PATH` | `/data/video-pipe.db` | SQLite 路径（挂载到宿主 `./data`） |
-| `MEDIAMTX_API` | `http://host.docker.internal:9997` | MediaMTX 控制 API（mediamtx 跑在 host 网络，经 host-gateway 访问） |
-| `MEDIAMTX_HOST` | `host.docker.internal` | ffmpeg 推流目标主机（mediamtx 跑在 host 网络） |
+| `MEDIAMTX_API` | `http://mediamtx:9997` | MediaMTX 控制 API（容器内） |
+| `MEDIAMTX_HOST` | `mediamtx` | ffmpeg 推流目标主机（容器内） |
 | `MEDIAMTX_USER` / `MEDIAMTX_PASS` | `wrapper` / `change-me` | 控制 API Basic Auth（须与 `mediamtx.yml` 的 `authInternalUsers` 一致） |
 | `PLAYBACK_HOST` | `localhost` | **浏览器**访问 MediaMTX 的主机名，用于拼播放地址（容器内地址浏览器不可达，远程访问必须改为对外可达地址；可在 `.env` 覆盖） |
 | `UPLOAD_DIR` | `/data/uploads` | 上传文件存放目录（挂载到宿主 `./data/uploads`） |
