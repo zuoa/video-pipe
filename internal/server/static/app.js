@@ -166,6 +166,18 @@ function protoChips(urls, name) {
 // re-render so an expanded card doesn't collapse under the user.
 const expanded = new Set();
 
+// readerLabel maps MediaMTX reader types to short protocol labels.
+function readerLabel(t) {
+  const labels = {
+    rtspSession: "RTSP",
+    rtmpConn: "RTMP",
+    webRTCSession: "WebRTC",
+    srtConn: "SRT",
+    hlsMuxer: "HLS",
+  };
+  return labels[t] || t;
+}
+
 function render(streams) {
   if (!streams.length) {
     grid.innerHTML = `<div class="empty-cell">还没有流。可以先创建一路“测试画面”检查服务状态。</div>`;
@@ -178,10 +190,16 @@ function render(streams) {
       const name = esc(s.name);
       const st = statusInfo(s);
       const open = expanded.has(s.name);
+      const viewers = s.readers > 0 ? `<span class="sc-viewers" title="当前观看人数">${s.readers} 人观看</span>` : "";
+      const readerRows = (s.reader_list || [])
+        .map((r) => `<div class="reader"><span class="reader-proto">${esc(readerLabel(r.type))}</span>` +
+          `<span class="mono">${esc(r.remote || "地址不可见")}</span></div>`)
+        .join("");
       return `<article class="stream-card st-${st.cls}">
         <header class="sc-head">
           <span class="sc-status"><span class="dot ${st.cls}"></span>${st.label}</span>
           <span class="sc-name mono" title="${name}">${name}</span>
+          ${viewers}
           <span class="sc-type">${typeLabel(s)}</span>
         </header>
         <div class="sc-chips">${protoChips(s.urls, s.name)}</div>
@@ -192,8 +210,8 @@ function render(streams) {
           <dl>
             <div><dt>输入源</dt><dd class="mono" title="${esc(s.source_url)}">${esc(s.source_url || "(test pattern)")}</dd></div>
             <div><dt>重启次数</dt><dd>${s.restart_count}</dd></div>
-            <div><dt>观看人数</dt><dd>${s.readers}</dd></div>
           </dl>
+          ${readerRows ? `<div class="sc-readers"><div class="sc-readers-title">观看列表</div>${readerRows}</div>` : ""}
           <div class="sc-actions">
             <button class="mini" data-action="start" data-name="${name}" ${canStart ? "" : "disabled"}>启动</button>
             <button class="mini" data-action="stop" data-name="${name}" ${canStop ? "" : "disabled"}>停止</button>

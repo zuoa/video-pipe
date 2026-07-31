@@ -263,7 +263,7 @@ func (m *Manager) pollOnce(ctx context.Context) {
 		// retry. Skipping the request also avoids MediaMTX logging a noisy API
 		// 404 every five seconds for a stream that has already ended.
 		if e.handle.Snapshot().State != ffmpeg.StateRunning {
-			e.handle.SetMediaMTX(false, 0)
+			e.handle.SetMediaMTX(false, nil)
 			continue
 		}
 		ps, err := m.mtx.GetPath(ctx, e.stream.Name)
@@ -273,7 +273,7 @@ func (m *Manager) pollOnce(ctx context.Context) {
 			continue
 		}
 		if ps == nil {
-			e.handle.SetMediaMTX(false, 0)
+			e.handle.SetMediaMTX(false, nil)
 		} else {
 			e.handle.SetMediaMTX(ps.Online, ps.Readers)
 		}

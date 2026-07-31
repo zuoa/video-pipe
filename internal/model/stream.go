@@ -57,6 +57,15 @@ func IsValidSourceType(t string) bool {
 	return false
 }
 
+// Reader is one consumer of a stream as reported by MediaMTX. Type is the
+// MediaMTX reader kind (rtspSession, rtmpConn, webRTCSession, srtConn,
+// hlsMuxer). Remote is the consumer's host:port; empty when MediaMTX doesn't
+// expose it (HLS readers aggregate behind the muxer).
+type Reader struct {
+	Type   string `json:"type"`
+	Remote string `json:"remote"`
+}
+
 // Stream is a single configured input source. The Name doubles as the
 // MediaMTX publication path.
 type Stream struct {

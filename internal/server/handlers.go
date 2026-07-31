@@ -23,6 +23,7 @@ type streamOut struct {
 	State         string            `json:"state"`
 	MtxOnline     bool              `json:"mtx_online"`
 	Readers       int               `json:"readers"`
+	ReaderList    []model.Reader    `json:"reader_list"`
 	RestartCount  int               `json:"restart_count"`
 	LastError     string            `json:"last_error"`
 	LastHeartbeat time.Time         `json:"last_heartbeat"`
@@ -38,6 +39,7 @@ func (s *Server) toStreamOut(st model.Stream) streamOut {
 		out.State = string(snap.State)
 		out.MtxOnline = snap.MtxOnline
 		out.Readers = snap.Readers
+		out.ReaderList = snap.ReaderList
 		out.RestartCount = snap.RestartCount
 		out.LastError = snap.LastError
 		out.LastHeartbeat = snap.LastHeartbeat

@@ -33,8 +33,9 @@ type Status struct {
 	RestartCount  int       `json:"restart_count"`
 	LastError     string    `json:"last_error"`
 	LastHeartbeat time.Time `json:"last_heartbeat"`
-	MtxOnline     bool      `json:"mtx_online"`
-	Readers       int       `json:"readers"`
+	MtxOnline     bool           `json:"mtx_online"`
+	Readers       int            `json:"readers"`
+	ReaderList    []model.Reader `json:"reader_list"`
 }
 
 // Supervision tunables.
@@ -77,6 +78,7 @@ type Handle struct {
 	lastHeartbeat time.Time
 	mtxOnline     bool
 	readers       int
+	readerList    []model.Reader
 
 	lastOut atomic.Int64 // unix-nano timestamp of the last `progress=continue`
 }
@@ -312,14 +314,18 @@ func (h *Handle) Snapshot() Status {
 		LastHeartbeat: h.lastHeartbeat,
 		MtxOnline:     h.mtxOnline,
 		Readers:       h.readers,
+		ReaderList:    h.readerList,
 	}
 }
 
-// SetMediaMTX caches the latest MediaMTX-side state (online + reader count).
-func (h *Handle) SetMediaMTX(online bool, readers int) {
+// SetMediaMTX caches the latest MediaMTX-side state (online + readers). The
+// slice is stored as-is: callers replace it wholesale each poll and never
+// mutate it afterwards.
+func (h *Handle) SetMediaMTX(online bool, readers []model.Reader) {
 	h.mu.Lock()
 	h.mtxOnline = online
-	h.readers = readers
+	h.readers = len(readers)
+	h.readerList = readers
 	h.mu.Unlock()
 }
 

@@ -436,6 +436,12 @@ button:disabled {
 	white-space: nowrap;
 }
 
+.sc-viewers {
+	color: var(--muted);
+	font-size: 11px;
+	white-space: nowrap;
+}
+
 .sc-type {
 	margin-left: auto;
 	padding: 2px 7px;
@@ -560,6 +566,32 @@ button.chip-play:hover {
 .sc-actions {
 	display: flex;
 	gap: 6px;
+}
+
+.sc-readers {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.sc-readers-title {
+	color: var(--muted-2);
+	font-size: 11px;
+}
+
+.reader {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	color: #b4c2d6;
+	font-size: 11px;
+}
+
+.reader-proto {
+	flex-shrink: 0;
+	min-width: 48px;
+	color: var(--accent);
+	font: 650 10px/1.5 var(--mono);
 }
 
 .empty-cell {
