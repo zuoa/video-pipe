@@ -1,4 +1,4 @@
-{{- /* index.html: server-rendered shell. The stream table is rendered client-side
+{{- /* index.html: server-rendered shell. The stream cards are rendered client-side
     from GET /api/streams by app.js. */ -}}
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -106,24 +106,8 @@
 				</div>
 				<div class="refresh-note"><span></span>每 5 秒自动刷新</div>
 			</div>
-			<div class="table-wrap">
-				<table>
-					<thead>
-						<tr>
-							<th>状态</th>
-							<th>名称</th>
-							<th>类型</th>
-							<th>输入源</th>
-							<th title="自动重启次数">重启</th>
-							<th title="当前观看者数">观看</th>
-							<th>播放地址（可复制到 VLC/浏览器测试）</th>
-							<th>操作</th>
-						</tr>
-					</thead>
-					<tbody id="streams-body">
-						<tr><td colspan="8" class="empty-cell">正在读取流状态…</td></tr>
-					</tbody>
-				</table>
+			<div id="streams-grid" class="streams-grid">
+				<div class="empty-cell">正在读取流状态…</div>
 			</div>
 		</section>
 

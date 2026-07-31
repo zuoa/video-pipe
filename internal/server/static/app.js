@@ -1,7 +1,7 @@
 // Front-end logic for the video-pipe management UI (vanilla JS, no framework).
-// The shell is server-rendered; the stream table is refreshed from the JSON API.
+// The shell is server-rendered; the stream cards are refreshed from the JSON API.
 
-const body = document.getElementById("streams-body");
+const grid = document.getElementById("streams-grid");
 const form = document.getElementById("create-form");
 const formMsg = document.getElementById("form-msg");
 
@@ -130,62 +130,77 @@ function typeLabel(s) {
   return labels[s.source_type] || esc(s.source_type);
 }
 
-function statusBadge(s) {
+function statusInfo(s) {
   const running = s.state === "running";
-  let label, cls;
-  if (s.state === "error") { label = "错误"; cls = "red"; }
-  else if (s.state === "stopped") { label = "已停止"; cls = "grey"; }
-  else if (s.state === "restarting") { label = "重启中"; cls = "yellow"; }
-  else if (running && s.mtx_online) { label = "在线"; cls = "green"; }
-  else if (running) { label = "推流中"; cls = "yellow"; }
-  else { label = s.state || "未知"; cls = "grey"; }
-  return `<span class="dot ${cls}"></span>${label}`;
+  if (s.state === "error") return { label: "错误", cls: "red" };
+  if (s.state === "stopped") return { label: "已停止", cls: "grey" };
+  if (s.state === "restarting") return { label: "重启中", cls: "yellow" };
+  if (running && s.mtx_online) return { label: "在线", cls: "green" };
+  if (running) return { label: "推流中", cls: "yellow" };
+  return { label: s.state || "未知", cls: "grey" };
 }
 
 // Protocols a browser can play inline (HLS via hls.js / native; WebRTC via
 // WHEP). RTSP/RTMP/SRT have no browser player, so they get no play button.
 const PLAYABLE = { hls: true, webrtc: true };
 
-function urlRows(urls, name) {
+// protoChips renders one chip per available playback URL. Clicking the chip
+// body copies the URL; playable protocols get an attached ▶ button that opens
+// the inline player.
+function protoChips(urls, name) {
   return ["rtsp", "rtmp", "hls", "webrtc", "srt"]
+    .filter((k) => urls[k])
     .map((k) => {
-      const u = urls[k] || "";
-      const play = PLAYABLE[k] && u
-        ? `<button class="mini play" data-play data-proto="${k}"` +
-          ` data-url="${esc(u)}" data-name="${esc(name)}">播放</button>`
+      const u = urls[k];
+      const play = PLAYABLE[k]
+        ? `<button class="chip-play" data-play data-proto="${k}"` +
+          ` data-url="${esc(u)}" data-name="${esc(name)}" title="播放 ${k.toUpperCase()}">▶</button>`
         : "";
-      return `<div class="u"><span class="proto">${k.toUpperCase()}</span>` +
-        `<code title="${esc(u)}">${esc(u)}</code>` +
-        `<button class="mini" data-copy="${esc(u)}">复制</button>` +
-        play + `</div>`;
+      return `<span class="chip"><button class="chip-copy" data-copy="${esc(u)}"` +
+        ` title="点击复制 ${esc(u)}">${k.toUpperCase()}</button>${play}</span>`;
     })
     .join("");
 }
 
+// Names of streams whose details panel is open. Kept across the 5s auto-refresh
+// re-render so an expanded card doesn't collapse under the user.
+const expanded = new Set();
+
 function render(streams) {
   if (!streams.length) {
-    body.innerHTML = `<tr><td colspan="8" class="empty-cell">还没有流。可以先创建一路“测试画面”检查服务状态。</td></tr>`;
+    grid.innerHTML = `<div class="empty-cell">还没有流。可以先创建一路“测试画面”检查服务状态。</div>`;
     return;
   }
-  body.innerHTML = streams
+  grid.innerHTML = streams
     .map((s) => {
       const canStart = s.state === "stopped" || s.state === "error";
       const canStop = s.state !== "stopped";
       const name = esc(s.name);
-      return `<tr>
-        <td>${statusBadge(s)}</td>
-        <td class="mono">${name}</td>
-        <td>${typeLabel(s)}</td>
-        <td class="src" title="${esc(s.source_url)}">${esc(s.source_url || "(test pattern)")}</td>
-        <td>${s.restart_count}</td>
-        <td>${s.readers}</td>
-        <td>${urlRows(s.urls, s.name)}</td>
-        <td class="actions">
-          <button class="mini" data-action="start" data-name="${name}" ${canStart ? "" : "disabled"}>启动</button>
-          <button class="mini" data-action="stop" data-name="${name}" ${canStop ? "" : "disabled"}>停止</button>
-          <button class="mini danger" data-action="del" data-name="${name}">删除</button>
-        </td>
-      </tr>`;
+      const st = statusInfo(s);
+      const open = expanded.has(s.name);
+      return `<article class="stream-card st-${st.cls}">
+        <header class="sc-head">
+          <span class="sc-status"><span class="dot ${st.cls}"></span>${st.label}</span>
+          <span class="sc-name mono" title="${name}">${name}</span>
+          <span class="sc-type">${typeLabel(s)}</span>
+        </header>
+        <div class="sc-chips">${protoChips(s.urls, s.name)}</div>
+        <button class="sc-toggle" data-details="${name}" aria-expanded="${open}">
+          详情 <span class="sc-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="sc-details" ${open ? "" : "hidden"}>
+          <dl>
+            <div><dt>输入源</dt><dd class="mono" title="${esc(s.source_url)}">${esc(s.source_url || "(test pattern)")}</dd></div>
+            <div><dt>重启次数</dt><dd>${s.restart_count}</dd></div>
+            <div><dt>观看人数</dt><dd>${s.readers}</dd></div>
+          </dl>
+          <div class="sc-actions">
+            <button class="mini" data-action="start" data-name="${name}" ${canStart ? "" : "disabled"}>启动</button>
+            <button class="mini" data-action="stop" data-name="${name}" ${canStop ? "" : "disabled"}>停止</button>
+            <button class="mini danger" data-action="del" data-name="${name}">删除</button>
+          </div>
+        </div>
+      </article>`;
     })
     .join("");
 }
@@ -232,8 +247,8 @@ function legacyCopy(text) {
   return ok;
 }
 
-// Event delegation for copy / start / stop / delete / play buttons.
-body.addEventListener("click", async (e) => {
+// Event delegation for copy / details / start / stop / delete / play buttons.
+grid.addEventListener("click", async (e) => {
   const play = e.target.closest("[data-play]");
   if (play) {
     openPlayer(play.getAttribute("data-name"), play.getAttribute("data-proto"), play.getAttribute("data-url"));
@@ -242,6 +257,16 @@ body.addEventListener("click", async (e) => {
   const cp = e.target.closest("[data-copy]");
   if (cp) {
     await copy(cp.getAttribute("data-copy"));
+    return;
+  }
+  const tog = e.target.closest("[data-details]");
+  if (tog) {
+    const name = tog.getAttribute("data-details");
+    const det = tog.closest(".stream-card").querySelector(".sc-details");
+    det.hidden = !det.hidden;
+    tog.setAttribute("aria-expanded", String(!det.hidden));
+    if (det.hidden) expanded.delete(name);
+    else expanded.add(name);
     return;
   }
   const btn = e.target.closest("[data-action]");
