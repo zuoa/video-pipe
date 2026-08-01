@@ -57,7 +57,9 @@ func TestBuildArgs_LiveHasNoRealtimeFlag(t *testing.T) {
 
 func TestBuildArgs_CachedProviderVODLoopsLocally(t *testing.T) {
 	const local = "/data/provider-cache/bili.media"
-	args := BuildArgs(stream(model.SourceHTTP, "https://www.bilibili.com/video/BV1xx"), "mediamtx", local, nil)
+	s := stream(model.SourceHTTP, "https://www.bilibili.com/video/BV1xx")
+	s.Provider = "bilibili"
+	args := BuildArgs(s, "mediamtx", local, nil)
 
 	if !containsPair(args, "-stream_loop", "-1") {
 		t.Errorf("cached provider VOD must loop forever; got %v", args)
@@ -71,6 +73,17 @@ func TestBuildArgs_CachedProviderVODLoopsLocally(t *testing.T) {
 	for _, forbidden := range []string{"-reconnect", "-user_agent", "-headers"} {
 		if contains(args, forbidden) {
 			t.Errorf("cached provider VOD must not use HTTP option %s; got %v", forbidden, args)
+		}
+	}
+	for label, ok := range map[string]bool{
+		"encodes H264":        containsPair(args, "-c:v", "libx264"),
+		"uses baseline":       containsPair(args, "-profile:v", "baseline"),
+		"disables B-frames":   containsPair(args, "-bf", "0"),
+		"encodes Opus":        containsPair(args, "-c:a", "libopus"),
+		"does not copy video": !containsPair(args, "-c:v", "copy"),
+	} {
+		if !ok {
+			t.Errorf("provider compatibility: %s; got %v", label, args)
 		}
 	}
 }
@@ -106,6 +119,8 @@ func TestBuildArgs_TestSourceEncodesToH264(t *testing.T) {
 	joined := strings.Join(args, " ")
 	checks := map[string]bool{
 		"encodes video to h264": containsPair(args, "-c:v", "libx264"),
+		"uses baseline profile": containsPair(args, "-profile:v", "baseline"),
+		"disables B-frames":     containsPair(args, "-bf", "0"),
 		"no audio (-an)":        contains(args, "-an"),
 		"does not copy video":   !containsPair(args, "-c:v", "copy"),
 		"does not copy audio":   !containsPair(args, "-c:a", "copy"),

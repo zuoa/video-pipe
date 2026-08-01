@@ -12,9 +12,12 @@ import (
 // BuildArgs constructs the ffmpeg argument vector for a stream.
 //
 // The output is always RTSP pushed to MediaMTX (rtsp://<mediamtxHost>:8554/<name>).
-// Real sources are remuxed losslessly (`-c:v copy -c:a copy`); the `test` source is
-// encoded to H.264 because its lavfi input is rawvideo, which cannot be copy-muxed
-// over RTSP. Per-source options (used only when resURL is empty):
+// Direct sources are remuxed losslessly (`-c:v copy -c:a copy`). Provider
+// sources are normalized to H.264 Baseline without B-frames + Opus since their
+// source codecs are not guaranteed to be browser-compatible. The `test` source
+// is encoded to the same WebRTC-safe H.264 profile because its lavfi input is
+// rawvideo, which cannot be copy-muxed over RTSP. Per-source options (used only
+// when resURL is empty):
 //   - file:  paced with -re so it is sent at real time
 //   - rtsp:   TCP transport + a socket read timeout to detect hung cameras
 //   - rtmp:   socket read timeout
@@ -69,14 +72,23 @@ func BuildArgs(s model.Stream, mediamtxHost, resURL string, headers map[string]s
 		args = append(args, "-re", "-i", s.SourceURL)
 	}
 
-	// Codec selection. The lavfi test source is rawvideo, which cannot be
-	// -c:v copy'd over RTSP (MediaMTX rejects the SDP with "clock rate not
-	// found"), so it is encoded to H.264. Real sources (including provider ones)
-	// are remuxed losslessly, mapping only the first video + first audio so stray
-	// tracks do not poison the output SDP (see the -map note above).
+	// Codec selection. Direct sources are remuxed losslessly. Provider media is
+	// normalized because H.264 with B-frames (common in VOD files) and AAC audio
+	// cannot be consumed by WebRTC browsers. Baseline + zerolatency + bf=0 makes
+	// the video WebRTC-safe; Opus works in both MediaMTX WebRTC and fMP4 HLS.
 	codecs := []string{"-map", "0:v:0?", "-map", "0:a:0?", "-c:v", "copy", "-c:a", "copy"}
-	if s.SourceType == model.SourceTest {
-		codecs = []string{"-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-g", "25", "-an"}
+	if s.Provider != "" {
+		codecs = []string{
+			"-map", "0:v:0?", "-map", "0:a:0?",
+			"-c:v", "libx264", "-profile:v", "baseline", "-pix_fmt", "yuv420p",
+			"-preset", "veryfast", "-tune", "zerolatency", "-g", "50", "-bf", "0",
+			"-c:a", "libopus", "-b:a", "96k", "-ar", "48000",
+		}
+	} else if s.SourceType == model.SourceTest {
+		codecs = []string{
+			"-c:v", "libx264", "-profile:v", "baseline", "-pix_fmt", "yuv420p",
+			"-preset", "veryfast", "-tune", "zerolatency", "-g", "25", "-bf", "0", "-an",
+		}
 	}
 	args = append(args, codecs...)
 	args = append(args, "-f", "rtsp", "-rtsp_transport", "tcp", out, "-progress", "pipe:1")
