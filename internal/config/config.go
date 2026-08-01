@@ -21,7 +21,11 @@ type Config struct {
 	MediaMTXPass string
 	// MediaMTXHost is the host:port the ffmpeg processes push RTSP to (container-internal).
 	MediaMTXHost string
-	// PlaybackHost is the externally reachable host used to build playback URLs for browsers.
+	// MediaMTXHLS / MediaMTXWebRTC are container-internal HTTP endpoints used
+	// by the application to proxy browser playback over its own origin.
+	MediaMTXHLS    string
+	MediaMTXWebRTC string
+	// PlaybackHost is the externally reachable host used to build native-player URLs.
 	PlaybackHost string
 	// UploadDir stores user-uploaded source files (under the mounted /data volume).
 	UploadDir string
@@ -43,6 +47,8 @@ func Load() (Config, error) {
 		MediaMTXUser:     env("MEDIAMTX_USER", "wrapper"),
 		MediaMTXPass:     env("MEDIAMTX_PASS", "change-me"),
 		MediaMTXHost:     env("MEDIAMTX_HOST", "mediamtx"),
+		MediaMTXHLS:      strings.TrimRight(env("MEDIAMTX_HLS", "http://mediamtx:8888"), "/"),
+		MediaMTXWebRTC:   strings.TrimRight(env("MEDIAMTX_WEBRTC", "http://mediamtx:8889"), "/"),
 		PlaybackHost:     env("PLAYBACK_HOST", "localhost"),
 		UploadDir:        env("UPLOAD_DIR", "/data/uploads"),
 		ProviderCacheDir: env("PROVIDER_CACHE_DIR", "/data/provider-cache"),

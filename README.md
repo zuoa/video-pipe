@@ -29,7 +29,9 @@
 
    ```bash
    cp .env.example .env
-   # 编辑 .env，把 VIDEOPIPE_IMAGE 改成 ghcr.io/<你的用户名>/video-pipe:latest
+   # 编辑 .env：
+   # - VIDEOPIPE_IMAGE 改成 ghcr.io/<你的用户名>/video-pipe:latest
+   # - 线上部署还要设置 PLAYBACK_HOST 和 WEBRTC_ADDITIONAL_HOSTS
    ```
 
 2. 拉取并启动：
@@ -42,7 +44,7 @@
 服务就绪后：
 
 - 管理界面：<http://localhost:8080>
-- MediaMTX 控制 API：<http://localhost:9997>
+- HLS 和 WebRTC 信令由管理服务同源转发，无需对外开放 MediaMTX 的 8888/8889 端口。
 
 **冒烟测试（无需任何外部视频源）**：打开管理界面，名称填 `demo`，类型选 `test`（地址留空），点"创建并启动"。`test` 源是一路色相循环的 H.264 测试图（颜色随时间变化，便于确认画面是"活的"），约 5 秒内状态灯变绿（在线），即可复制各协议地址到 VLC / Safari 验证：
 
@@ -50,11 +52,11 @@
 |---|---|
 | RTSP | `rtsp://localhost:8554/demo` |
 | RTMP | `rtmp://localhost:1935/demo` |
-| HLS  | `http://localhost:8888/demo/index.m3u8` |
-| WebRTC | `http://localhost:8889/demo`（浏览器打开） |
+| HLS  | `http://localhost:8080/playback/hls/demo/index.m3u8` |
+| WebRTC | 在管理页点 WebRTC 的播放按钮（WHEP 路径：`/playback/webrtc/demo/whep`） |
 | SRT   | `srt://localhost:8890?streamid=#!::m=request,r=demo` |
 
-> 没有 FLV：MediaMTX 不输出 FLV，以上 5 种即全部；浏览器播放用 HLS 或 WebRTC。播放地址里的主机名由 `PLAYBACK_HOST` 决定——本机访问用 `localhost` 即可，远程/LAN 访问请在 `.env` 里把它改成服务器 IP 或域名。
+> 没有 FLV：MediaMTX 不输出 FLV，以上 5 种即全部；浏览器播放用 HLS 或 WebRTC。HLS/WebRTC 自动使用当前管理页的 HTTP(S) 域名；`PLAYBACK_HOST` 只用于生成 RTSP/RTMP/SRT 这些原生客户端地址。
 
 接入真实摄像头：输入类型选“自动识别”或“RTSP”，地址填 `rtsp://user:pass@ip:554/...`。本地文件：输入类型选“本地文件”后，页面才会显示“选择视频文件”按钮；文件会上传到挂载的 `./data/uploads/`，无需手填路径。
 
@@ -67,9 +69,19 @@
 
 ## 输出协议（可选）
 
-MediaMTX 对每个流默认开 RTSP/RTMP/HLS/WebRTC/SRT 全部 5 种。设置环境变量 `ENABLE_RTSP` / `ENABLE_RTMP` / `ENABLE_HLS` / `ENABLE_WEBRTC` / `ENABLE_SRT` 为 `0`/`false`/`no` 可让 UI/API **不再展示**该协议的播放地址（默认全开）。要真正在 MediaMTX 侧关闭某协议（省资源/更干净），还需在 `mediamtx.yml` 里把该协议设为 `no`（如 `hls: no`、`webrtc: no`），并取消 `docker-compose.yml` 里对应端口的发布。
+MediaMTX 对每个流默认开 RTSP/RTMP/HLS/WebRTC/SRT 全部 5 种。设置环境变量 `ENABLE_RTSP` / `ENABLE_RTMP` / `ENABLE_HLS` / `ENABLE_WEBRTC` / `ENABLE_SRT` 为 `0`/`false`/`no` 可让 UI/API **不再展示**该协议的播放地址（默认全开）。要真正在 MediaMTX 侧关闭某协议，还需在 `mediamtx.yml` 里关闭它（如 `hls: false`、`webrtc: false`）；对 RTSP/RTMP/SRT 同时取消 Compose 中的对外端口发布。
 
-> **浏览器播放用 HLS；浏览器内的 WebRTC 需要额外配置**。默认桥接网络下 RTSP/RTMP/HLS/SRT 都正常（Docker 发布端口会绕过宿主机防火墙）。但 WebRTC 的媒体面（DTLS/SRTP，大 UDP 包/分片）无法穿越 Docker 桥接 NAT——信令通了、ICE 也连上了，DTLS 握手却完不成，浏览器永远等不到画面（MediaMTX 自带的 `/read` 页在桥接网络下同样放不出来）。要让浏览器内 WebRTC 可用，需要把 `docker-compose.yml` 里 mediamtx 服务改为 `network_mode: host`（仅 **Linux 原生 Docker** 支持，macOS/Windows 的 Docker Desktop 不支持），**并在宿主机防火墙放行对应端口**：host 网络不再走 Docker 的端口发布（也就不再绕过 `ufw`/firewalld），而是直接受宿主机 INPUT 规则约束。切换后浏览器播放至少需放行 `8888/tcp`(HLS)、`8889/tcp`(WebRTC 信令)、`8189/udp`(WebRTC 媒体)，RTSP/RTMP/SRT 还需 `8554/tcp`、`1935/tcp`、`8890/udp`；云主机还要在安全组同步放行。若不想动防火墙，保持桥接网络、浏览器用 HLS 播放即可（推荐）。
+### 线上 HLS / WebRTC 配置
+
+HLS 与 WebRTC 的 HTTP 信令都从管理页的同源路径转发，因此即使管理页在 Nginx/Caddy 的 HTTPS 后面，也不会触发 mixed content 或 CORS。反向代理只需将整个 `/` 转发到 `video-pipe:8080`，不要排除 `/playback/`。
+
+WebRTC 的媒体数据不走 HTTP 反代，需要：
+
+1. 在 `.env` 中把 `WEBRTC_ADDITIONAL_HOSTS` 设为服务器的公网 IPv4 或 DNS 名。使用 CDN 时要填能直达源站的地址，不能填只代理 HTTP 的 CDN 节点。
+2. 云安全组和宿主机防火墙放行 `8189/udp`；建议同时放行 `8189/tcp` 作为 UDP 被客户端网络拦截时的回退。
+3. 重建 MediaMTX 容器使配置生效：`docker compose up -d --force-recreate mediamtx video-pipe`。
+
+Docker bridge 网络可以继续使用，无需切换 `network_mode: host`。如果不能开放 ICE 端口，先使用 HLS；更严格的企业网络需要 TURN 服务器。
 
 ## 配置（环境变量）
 
@@ -82,13 +94,14 @@ MediaMTX 对每个流默认开 RTSP/RTMP/HLS/WebRTC/SRT 全部 5 种。设置环
 | `MEDIAMTX_API` | `http://mediamtx:9997` | MediaMTX 控制 API（容器内） |
 | `MEDIAMTX_HOST` | `mediamtx` | ffmpeg 推流目标主机（容器内） |
 | `MEDIAMTX_USER` / `MEDIAMTX_PASS` | `wrapper` / `change-me` | 控制 API Basic Auth（须与 `mediamtx.yml` 的 `authInternalUsers` 一致） |
-| `PLAYBACK_HOST` | `localhost` | **浏览器**访问 MediaMTX 的主机名，用于拼播放地址（容器内地址浏览器不可达，远程访问必须改为对外可达地址；可在 `.env` 覆盖） |
+| `PLAYBACK_HOST` | `localhost` | 生成 RTSP/RTMP/SRT 地址时使用的公网主机名/IP |
+| `MEDIAMTX_HLS` / `MEDIAMTX_WEBRTC` | `http://mediamtx:8888` / `http://mediamtx:8889` | HLS 和 WebRTC 同源反代的容器内上游，Compose 部署通常无需修改 |
 | `UPLOAD_DIR` | `/data/uploads` | 上传文件存放目录（挂载到宿主 `./data/uploads`） |
 | `PROVIDER_CACHE_DIR` | `/data/provider-cache` | B站普通视频的完整下载缓存目录（挂载到宿主 `./data/provider-cache`） |
 | `UPLOAD_MAX_BYTES` | `0` | 单个上传文件大小上限（字节），`0` 表示不限。超出返回 413 |
-| `ENABLE_RTSP` / `ENABLE_RTMP` / `ENABLE_HLS` / `ENABLE_WEBRTC` / `ENABLE_SRT` | 全部启用 | 是否在 UI/API 展示对应协议的播放地址（`0`/`false`/`no` 关闭）。配合 `mediamtx.yml` 的 `xxx: no` 可真正关闭该协议 |
+| `ENABLE_RTSP` / `ENABLE_RTMP` / `ENABLE_HLS` / `ENABLE_WEBRTC` / `ENABLE_SRT` | 全部启用 | 是否在 UI/API 展示对应协议的播放地址（`0`/`false`/`no` 关闭）。配合 `mediamtx.yml` 的 `xxx: false` 可真正关闭该协议 |
 
-> 生产部署：把 `PLAYBACK_HOST` 改成对外域名/IP；如需对外暴露，按需在 `docker-compose.yml` 发布端口。
+> `WEBRTC_ADDITIONAL_HOSTS` 是 MediaMTX 容器的环境变量，由 `docker-compose.yml` 从 `.env` 注入；它不是 Go 后端配置。
 
 ## HTTP API
 
@@ -131,7 +144,7 @@ internal/server/               HTTP API + html/template UI（templates/、static
 mediamtx.yml                   MediaMTX 配置（开启 Control API + wrapper 鉴权）
 Dockerfile                     镜像构建（CI 用）
 docker-compose.yml             部署编排：拉取预构建镜像（pull，不 build）
-.env.example                   部署配置模板（VIDEOPIPE_IMAGE、PLAYBACK_HOST、UPLOAD_MAX_BYTES）
+.env.example                   部署配置模板（镜像、公网播放主机、WebRTC ICE 等）
 .github/workflows/ci.yml       CI：test + 构建并推送镜像到 GHCR
 ```
 

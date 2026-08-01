@@ -151,7 +151,9 @@ function protoChips(urls, name) {
   return ["rtsp", "rtmp", "hls", "webrtc", "srt"]
     .filter((k) => urls[k])
     .map((k) => {
-      const u = urls[k];
+      // HLS/WebRTC are returned as same-origin paths. Turn them into absolute
+      // URLs for copying while preserving the current public HTTPS origin.
+      const u = PLAYABLE[k] ? new URL(urls[k], window.location.href).href : urls[k];
       const play = PLAYABLE[k]
         ? `<button class="chip-play" data-play data-proto="${k}"` +
           ` data-url="${esc(u)}" data-name="${esc(name)}" title="播放 ${k.toUpperCase()}">▶</button>`
@@ -527,7 +529,7 @@ function playWebRTC(whepUrl) {
   // frozen black frame.
   const watchdog = setTimeout(() => {
     if (!closed && !mediaStarted) {
-      status("未收到画面。WebRTC 在 Docker 默认桥接网络下常因媒体(UDP/DTLS)无法穿越而失败——建议改用 HLS，或将 mediamtx 容器改为 host 网络(network_mode: host)。", true);
+      status("未收到画面。请确认 WEBRTC_ADDITIONAL_HOSTS 是公网可达地址，且安全组/防火墙已放行 8189/UDP 或 8189/TCP；也可改用 HLS。", true);
     }
   }, 8000);
 

@@ -49,15 +49,16 @@ func (s *Server) toStreamOut(st model.Stream) streamOut {
 	return out
 }
 
-// playbackURLs builds the per-protocol playback URLs for a path using the
-// externally reachable host (PLAYBACK_HOST), limited to enabled protocols.
-// MediaMTX default ports are used.
+// playbackURLs builds per-protocol playback URLs, limited to enabled protocols.
+// Browser protocols use same-origin proxy paths so they also work behind HTTPS
+// and don't require exposing the MediaMTX HTTP ports. Native-player protocols
+// still use the externally reachable PLAYBACK_HOST.
 func playbackURLs(host, name string, enabled map[string]bool) map[string]string {
 	all := map[string]string{
 		"rtsp":   fmt.Sprintf("rtsp://%s:8554/%s", host, name),
 		"rtmp":   fmt.Sprintf("rtmp://%s:1935/%s", host, name),
-		"hls":    fmt.Sprintf("http://%s:8888/%s/index.m3u8", host, name),
-		"webrtc": fmt.Sprintf("http://%s:8889/%s", host, name),
+		"hls":    fmt.Sprintf("/playback/hls/%s/index.m3u8", name),
+		"webrtc": fmt.Sprintf("/playback/webrtc/%s", name),
 		"srt":    fmt.Sprintf("srt://%s:8890?streamid=#!::m=request,r=%s", host, name),
 	}
 	out := make(map[string]string, len(all))

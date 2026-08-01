@@ -2,27 +2,21 @@ services:
   # MediaMTX: the conversion core. Accepts our ffmpeg RTSP push and republishes
   # the same stream as RTSP/RTMP/HLS/WebRTC/SRT.
   mediamtx:
-    image: bluenviron/mediamtx:latest
+    image: bluenviron/mediamtx:1
     container_name: video-pipe-mediamtx
     restart: unless-stopped
-    # Bridge networking + published ports is the default. Docker's port
-    # publishing bypasses the host firewall (ufw/firewalld), so RTSP/RTMP/HLS/SRT
-    # are reachable from the LAN with no firewall changes.
-    # In-browser WebRTC does NOT work under bridge: its UDP media (DTLS/SRTP)
-    # can't traverse Docker's NAT. For browser WebRTC, switch this service to
-    # `network_mode: host` AND open 8888/8889/8189 in the host firewall — see
-    # README "WebRTC 需要 host 网络". Most deployments just use HLS for browser
-    # playback and leave this on bridge.
+    # Browser HLS and WebRTC signaling are proxied by video-pipe over port 8080.
+    # WebRTC media itself needs the public ICE host plus port 8189 (UDP/TCP).
+    environment:
+      MTX_WEBRTCADDITIONALHOSTS: "${WEBRTC_ADDITIONAL_HOSTS:-localhost}"
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
     ports:
       - "8554:8554"        # RTSP (TCP)
       - "1935:1935"        # RTMP (TCP)
-      - "8888:8888"        # HLS (HTTP)
-      - "8889:8889"        # WebRTC signaling (HTTP)
       - "8189:8189/udp"    # WebRTC ICE (UDP)
+      - "8189:8189/tcp"    # WebRTC ICE fallback (TCP)
       - "8890:8890/udp"    # SRT (UDP)
-      - "9997:9997"        # Control API (used by the backend)
 
   # video-pipe: scheduling/management layer (this repo). The image is built and
   # published by GitHub Actions (see .github/workflows/ci.yml); this compose file
@@ -40,9 +34,11 @@ services:
       DB_PATH: "/data/video-pipe.db"
       MEDIAMTX_API: "http://mediamtx:9997"   # container-internal API base
       MEDIAMTX_HOST: "mediamtx"              # host ffmpeg pushes RTSP to
+      MEDIAMTX_HLS: "http://mediamtx:8888"   # same-origin HLS proxy upstream
+      MEDIAMTX_WEBRTC: "http://mediamtx:8889" # same-origin WHEP proxy upstream
       MEDIAMTX_USER: "wrapper"               # must match authInternalUsers in mediamtx.yml
       MEDIAMTX_PASS: "change-me"
-      PLAYBACK_HOST: "${PLAYBACK_HOST:-localhost}"  # override in .env; host browsers use to reach MediaMTX
+      PLAYBACK_HOST: "${PLAYBACK_HOST:-localhost}"  # public host for RTSP/RTMP/SRT URLs
       UPLOAD_DIR: "/data/uploads"            # uploaded source files (under mounted ./data)
       PROVIDER_CACHE_DIR: "${PROVIDER_CACHE_DIR:-/data/provider-cache}"  # downloaded Bilibili VODs for local looping
       UPLOAD_MAX_BYTES: "${UPLOAD_MAX_BYTES:-0}"  # single-upload size cap; 0 = unlimited
