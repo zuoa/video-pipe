@@ -22,7 +22,7 @@ const uploadStatus = document.getElementById("upload-status");
 const createSubmit = document.getElementById("create-submit");
 
 const typeCopy = {
-  auto: ["根据地址自动识别协议", "输入地址", "粘贴 RTSP、RTMP 或 HTTP 地址", "支持 rtsp://、rtmp://、http:// 和 https://"],
+  auto: ["根据地址自动识别协议与站点", "输入地址", "粘贴 RTSP、RTMP、HTTP 或视频站地址", "支持 rtsp://、rtmp://、http(s)://，自动识别 B站与斗鱼地址"],
   rtsp: ["网络摄像机与实时视频源", "RTSP 地址", "rtsp://user:password@host:554/path", "支持 rtsp:// 和 rtsps://"],
   rtmp: ["直播推流或拉流地址", "RTMP 地址", "rtmp://host/app/stream", "支持 rtmp:// 和 rtmps://"],
   http: ["HTTP 视频流或 HLS 播放列表", "HTTP / HLS 地址", "https://example.com/live/index.m3u8", "支持 HTTP 视频与 .m3u8 地址"],

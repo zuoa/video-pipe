@@ -14,6 +14,7 @@ import (
 
 	"video-pipe/internal/ffmpeg"
 	"video-pipe/internal/model"
+	"video-pipe/internal/provider"
 	"video-pipe/internal/store"
 )
 
@@ -119,6 +120,12 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 	if prov != "" && !model.IsValidProvider(prov) {
 		badRequest(w, "invalid provider")
 		return
+	}
+	if prov == "" {
+		// Auto-detect provider page/room URLs (bilibili.com, douyu.com). Feeding
+		// such a page URL to ffmpeg directly can never work — it returns HTML —
+		// so upgrading to the resolver is strictly better than failing later.
+		prov = provider.DetectFromURL(req.SourceURL)
 	}
 
 	srcType := req.SourceType
