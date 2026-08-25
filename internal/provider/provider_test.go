@@ -54,6 +54,25 @@ func TestGet_KnownProviders(t *testing.T) {
 	}
 }
 
+func TestIsBilibiliVODURL(t *testing.T) {
+	for _, rawURL := range []string{
+		"https://www.bilibili.com/video/BV1Ey4y1M7cM",
+		"https://www.bilibili.com/video/av12345",
+	} {
+		if !IsBilibiliVODURL(rawURL) {
+			t.Errorf("IsBilibiliVODURL(%q) = false, want true", rawURL)
+		}
+	}
+	for _, rawURL := range []string{
+		"https://live.bilibili.com/12345",
+		"https://www.douyu.com/12345",
+	} {
+		if IsBilibiliVODURL(rawURL) {
+			t.Errorf("IsBilibiliVODURL(%q) = true, want false", rawURL)
+		}
+	}
+}
+
 func TestDouyuRoomFromURL(t *testing.T) {
 	cases := map[string]string{
 		"https://www.douyu.com/12345":        "12345",

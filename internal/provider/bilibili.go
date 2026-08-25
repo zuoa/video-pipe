@@ -49,6 +49,14 @@ var (
 	biliLiveRe = regexp.MustCompile(`live\.bilibili\.com/(?:h5/)?(\d+)`)
 )
 
+// IsBilibiliVODURL reports whether rawURL is one of the ordinary Bilibili
+// video URLs supported by the resolver. VODs can be downloaded into the
+// persistent cache ahead of playback; live-room URLs must stay lazy because
+// their signed CDN addresses expire quickly.
+func IsBilibiliVODURL(rawURL string) bool {
+	return !biliLiveRe.MatchString(rawURL) && (biliBVRe.MatchString(rawURL) || biliAVRe.MatchString(rawURL))
+}
+
 func (b *bilibiliResolver) Resolve(ctx context.Context, pageURL string) (*Result, error) {
 	switch {
 	case biliLiveRe.MatchString(pageURL):

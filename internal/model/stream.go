@@ -18,7 +18,8 @@ const (
 	SourceTest = "test" // FFmpeg lavfi test pattern, for smoke testing without a real source.
 )
 
-// Desired runtime states.
+// Desired administrative states. "running" means enabled for on-demand
+// playback; it does not imply that an ffmpeg process is currently resident.
 const (
 	StateRunning = "running"
 	StateStopped = "stopped"

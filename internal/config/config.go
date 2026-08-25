@@ -12,6 +12,9 @@ import (
 type Config struct {
 	// Addr is the HTTP listen address for the management API + UI.
 	Addr string
+	// OnDemandAddr is a container-internal HTTP listener used only by the
+	// MediaMTX runOnDemand helper. Docker Compose does not publish this port.
+	OnDemandAddr string
 	// DBPath is the SQLite database file path.
 	DBPath string
 	// MediaMTXAPI is the base URL of the MediaMTX Control API (e.g. http://mediamtx:9997).
@@ -42,6 +45,7 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{
 		Addr:             env("ADDR", ":8080"),
+		OnDemandAddr:     env("ON_DEMAND_ADDR", ":8081"),
 		DBPath:           env("DB_PATH", "/data/video-pipe.db"),
 		MediaMTXAPI:      strings.TrimRight(env("MEDIAMTX_API", "http://mediamtx:9997"), "/"),
 		MediaMTXUser:     env("MEDIAMTX_USER", "wrapper"),

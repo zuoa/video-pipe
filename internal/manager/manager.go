@@ -1,11 +1,11 @@
-// Package manager owns the lifecycle of all ffmpeg stream processes: starting,
-// stopping, restarting, restoring persisted state on boot, polling MediaMTX for
-// online status, and producing status snapshots for the API/UI.
+// Package manager owns on-demand ffmpeg processes, provider-cache preparation,
+// MediaMTX status polling, and status snapshots for the API/UI.
 package manager
 
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -23,6 +23,21 @@ import (
 // pollInterval is how often MediaMTX online state is refreshed.
 const pollInterval = 5 * time.Second
 
+const (
+	prepareConcurrency = 2
+	prepareRetryAfter  = 30 * time.Second
+	demandLeaseTTL     = 45 * time.Second
+)
+
+var (
+	// ErrDisabled means that a path exists but was explicitly disabled by the
+	// user. A MediaMTX on-demand hook must not start it.
+	ErrDisabled = errors.New("stream is disabled")
+	// ErrPreparing means that a cached provider source is still being prepared.
+	// The hook should retry while MediaMTX keeps the reader waiting.
+	ErrPreparing = errors.New("stream source is preparing")
+)
+
 // Manager coordinates stream processes.
 type Manager struct {
 	store    *store.Store
@@ -33,33 +48,55 @@ type Manager struct {
 
 	ctx context.Context
 
-	mu      sync.Mutex
-	handles map[string]*entry
-	wg      sync.WaitGroup
+	mu           sync.Mutex
+	handles      map[string]*entry
+	demands      map[string]map[string]time.Time
+	prepares     map[string]*prepareEntry
+	prepareSlots chan struct{}
+	wg           sync.WaitGroup
 }
 
 type entry struct {
 	handle *ffmpeg.Handle
 	stream model.Stream
+	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
+}
+
+// PreparationStatus describes ahead-of-time work that does not consume
+// transcoding CPU. Today it is used for Bilibili VOD downloads.
+type PreparationStatus struct {
+	State     string
+	LastError string
+}
+
+type prepareEntry struct {
+	status  PreparationStatus
+	cancel  context.CancelFunc
+	done    chan struct{}
+	retryAt time.Time
 }
 
 // New creates a Manager. Call Start to boot.
 func New(st *store.Store, mtx *mediamtx.Client, mtxHost, cacheDir string, log *slog.Logger) *Manager {
 	return &Manager{
-		store:    st,
-		mtx:      mtx,
-		mtxHost:  mtxHost,
-		cacheDir: cacheDir,
-		log:      log,
-		handles:  make(map[string]*entry),
+		store:        st,
+		mtx:          mtx,
+		mtxHost:      mtxHost,
+		cacheDir:     cacheDir,
+		log:          log,
+		handles:      make(map[string]*entry),
+		demands:      make(map[string]map[string]time.Time),
+		prepares:     make(map[string]*prepareEntry),
+		prepareSlots: make(chan struct{}, prepareConcurrency),
 	}
 }
 
-// Start restores all streams whose desired state is "running" and launches the
-// MediaMTX status poller. It returns once restore is complete; the poller runs
-// until ctx is canceled. Use Wait to block until all processes have exited.
+// Start restores lightweight preparation jobs and launches the MediaMTX status
+// poller. It deliberately does not restore ffmpeg processes: enabled streams
+// remain idle until MediaMTX reports an actual reader through its runOnDemand
+// hook. Use Wait to block until all processes and preparation jobs have exited.
 func (m *Manager) Start(ctx context.Context) error {
 	m.ctx = ctx
 
@@ -69,45 +106,39 @@ func (m *Manager) Start(ctx context.Context) error {
 	} else {
 		for _, s := range streams {
 			if s.DesiredState == model.StateRunning {
-				if m.start(ctx, s) {
-					m.log.Info("manager: restored stream", "name", s.Name)
-				}
+				m.Prepare(s)
 			}
 		}
 	}
 
 	go m.pollLoop(ctx)
+	go m.leaseLoop(ctx)
 	return nil
 }
 
-// Wait blocks until every managed process goroutine has exited (used at shutdown).
+// Wait blocks until every ffmpeg and preparation goroutine has exited.
 func (m *Manager) Wait() { m.wg.Wait() }
 
-// EnsureRunning starts (or replaces) the ffmpeg process for a stream and marks
-// its desired state running. The stream must already exist in the store.
-func (m *Manager) EnsureRunning(s model.Stream) error {
+// Enable marks a stream available for on-demand playback. It does not start
+// ffmpeg; MediaMTX's first reader will acquire a demand lease and start it.
+func (m *Manager) Enable(s model.Stream) error {
 	if err := m.store.SetDesired(m.ctx, s.Name, model.StateRunning); err != nil {
 		return err
 	}
-	m.start(m.ctx, s)
+	s.DesiredState = model.StateRunning
+	m.Prepare(s)
 	return nil
 }
 
-// EnsureStopped stops the ffmpeg process for a stream (if running) and marks
-// desired state stopped.
+// EnsureStopped disables a stream, cancels preparation and stops its ffmpeg
+// process even if a reader currently holds an on-demand lease.
 func (m *Manager) EnsureStopped(name string) error {
-	m.stop(name)
-	return m.store.SetDesired(m.ctx, name, model.StateStopped)
-}
-
-// Restart stops then starts a stream.
-func (m *Manager) Restart(name string) error {
-	s, err := m.store.Get(m.ctx, name)
-	if err != nil {
+	if err := m.store.SetDesired(m.ctx, name, model.StateStopped); err != nil {
 		return err
 	}
-	m.stop(name)
-	return m.EnsureRunning(s)
+	m.cancelPreparation(name)
+	m.stopAndClearDemand(name)
+	return nil
 }
 
 // Delete stops a stream and removes it from the store.
@@ -116,10 +147,11 @@ func (m *Manager) Delete(name string) error {
 	if err != nil {
 		return err
 	}
-	m.stop(name)
 	if err := m.store.Delete(m.ctx, name); err != nil {
 		return err
 	}
+	m.cancelPreparation(name)
+	m.stopAndClearDemand(name)
 	if s.Provider == "bilibili" {
 		for _, path := range []string{m.providerCachePath(s), m.providerCachePath(s) + ".part"} {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -128,6 +160,74 @@ func (m *Manager) Delete(name string) error {
 		}
 	}
 	return nil
+}
+
+// AcquireDemand records one MediaMTX runOnDemand command as a lease and starts
+// the stream if this is its first reader. Re-acquiring the same lease is
+// idempotent, which lets the hook heartbeat recover after a backend restart.
+func (m *Manager) AcquireDemand(name, lease string) error {
+	if !model.ValidName(name) || lease == "" {
+		return fmt.Errorf("invalid demand lease")
+	}
+	s, err := m.store.Get(m.ctx, name)
+	if err != nil {
+		return err
+	}
+	if s.DesiredState != model.StateRunning {
+		return ErrDisabled
+	}
+
+	if s.Provider == "bilibili" && provider.IsBilibiliVODURL(s.SourceURL) {
+		m.Prepare(s)
+		prep, ok := m.PreparationSnapshot(name)
+		if !ok || prep.State != "ready" {
+			return ErrPreparing
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	leases := m.demands[name]
+	if leases == nil {
+		leases = make(map[string]time.Time)
+		m.demands[name] = leases
+	}
+	leases[lease] = time.Now()
+	if _, ok := m.handles[name]; ok {
+		return nil
+	}
+	e, err := m.newEntry(s)
+	if err != nil {
+		delete(leases, lease)
+		if len(leases) == 0 {
+			delete(m.demands, name)
+		}
+		return err
+	}
+	m.handles[name] = e
+	m.launchLocked(e)
+	m.log.Info("manager: stream activated on demand", "stream", name)
+	return nil
+}
+
+// ReleaseDemand drops one reader lease. The last release stops ffmpeg but
+// keeps desired_state=running, so the next reader can activate it again.
+func (m *Manager) ReleaseDemand(name, lease string) {
+	m.mu.Lock()
+	leases := m.demands[name]
+	if leases == nil {
+		m.mu.Unlock()
+		return
+	}
+	delete(leases, lease)
+	if len(leases) != 0 {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.demands, name)
+	e := m.takeEntryLocked(name)
+	m.mu.Unlock()
+	m.stopEntry(name, e)
 }
 
 // HandleSnapshot returns the live process status for a stream, or (zero,false)
@@ -142,19 +242,114 @@ func (m *Manager) HandleSnapshot(name string) (ffmpeg.Status, bool) {
 	return e.handle.Snapshot(), true
 }
 
-// start launches a handle for s. If one already exists it is stopped first
-// (replace). Returns true if a new process was started.
-func (m *Manager) start(ctx context.Context, s model.Stream) bool {
-	m.stop(s.Name) // ensure no stale handle for this name
+// PreparationSnapshot returns the current provider-cache preparation status.
+func (m *Manager) PreparationSnapshot(name string) (PreparationStatus, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.prepares[name]
+	if !ok {
+		return PreparationStatus{}, false
+	}
+	return p.status, true
+}
 
+// Prepare downloads a supported Bilibili VOD into persistent storage without
+// launching ffmpeg. Calls are idempotent; failed downloads retry after a short
+// backoff when a reader is still waiting.
+func (m *Manager) Prepare(s model.Stream) {
+	if s.Provider != "bilibili" || !provider.IsBilibiliVODURL(s.SourceURL) {
+		return
+	}
+	path := m.providerCachePath(s)
+	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+		m.mu.Lock()
+		m.prepares[s.Name] = &prepareEntry{status: PreparationStatus{State: "ready"}}
+		m.mu.Unlock()
+		return
+	}
+
+	m.mu.Lock()
+	if current := m.prepares[s.Name]; current != nil {
+		// A prior "ready" entry is stale when the stat above says the cache file
+		// disappeared; recreate it instead of starting ffmpeg with a missing path.
+		if current.status.State == "preparing" || time.Now().Before(current.retryAt) {
+			m.mu.Unlock()
+			return
+		}
+	}
+	pctx, cancel := context.WithCancel(m.ctx)
+	p := &prepareEntry{
+		status: PreparationStatus{State: "preparing"},
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	m.prepares[s.Name] = p
+	m.wg.Add(1)
+	go m.runPreparation(pctx, s, p)
+	m.mu.Unlock()
+}
+
+func (m *Manager) runPreparation(ctx context.Context, s model.Stream, p *prepareEntry) {
+	defer m.wg.Done()
+	defer close(p.done)
+
+	select {
+	case m.prepareSlots <- struct{}{}:
+		defer func() { <-m.prepareSlots }()
+	case <-ctx.Done():
+		return
+	}
+
+	r, ok := provider.Get("bilibili")
+	if !ok {
+		m.finishPreparation(s.Name, p, fmt.Errorf("bilibili provider unavailable"))
+		return
+	}
+	res, err := r.Resolve(ctx, s.SourceURL)
+	if err == nil && res.Live {
+		err = fmt.Errorf("expected a Bilibili video, got a live source")
+	}
+	if err == nil {
+		_, err = m.cacheProviderVOD(ctx, s, res)
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	m.finishPreparation(s.Name, p, err)
+}
+
+func (m *Manager) finishPreparation(name string, p *prepareEntry, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.prepares[name] != p {
+		return
+	}
+	p.cancel = nil
+	if err != nil {
+		p.status = PreparationStatus{State: "error", LastError: err.Error()}
+		p.retryAt = time.Now().Add(prepareRetryAfter)
+		m.log.Warn("manager: provider VOD preparation failed", "stream", name, "err", err)
+		return
+	}
+	p.status = PreparationStatus{State: "ready"}
+	p.retryAt = time.Time{}
+	m.log.Info("manager: provider VOD ready; waiting for a reader", "stream", name)
+}
+
+// newEntry creates a not-yet-launched ffmpeg supervisor. Caller holds m.mu.
+func (m *Manager) newEntry(s model.Stream) (*entry, error) {
 	// For provider sources, build a resolver that refreshes the CDN URL before
 	// every (re)start. Direct sources pass nil (they use s.SourceURL directly).
 	var resolve ffmpeg.Resolver
-	if s.Provider != "" {
+	if s.Provider == "bilibili" && provider.IsBilibiliVODURL(s.SourceURL) {
+		cachePath := m.providerCachePath(s)
+		resolve = func(context.Context) (string, map[string]string, bool, error) {
+			return cachePath, nil, false, nil
+		}
+	} else if s.Provider != "" {
 		r, ok := provider.Get(s.Provider)
 		if !ok {
-			m.log.Error("manager: unknown provider", "stream", s.Name, "provider", s.Provider)
-			return false
+			return nil, fmt.Errorf("unknown provider %q", s.Provider)
 		}
 		pageURL := s.SourceURL
 		resolve = func(c context.Context) (string, map[string]string, bool, error) {
@@ -162,36 +357,33 @@ func (m *Manager) start(ctx context.Context, s model.Stream) bool {
 			if err != nil {
 				return "", nil, false, err
 			}
-			if s.Provider == "bilibili" && !res.Live {
-				cachePath, err := m.cacheProviderVOD(c, s, res)
-				if err != nil {
-					return "", nil, false, fmt.Errorf("cache bilibili video: %w", err)
-				}
-				// The local file is looped by ffmpeg and therefore behaves like
-				// a never-ending source from the supervisor's perspective.
-				return cachePath, nil, true, nil
-			}
 			return res.URL, res.Headers, res.Live, nil
 		}
 	}
 
 	h := ffmpeg.NewHandle(s.Name, s, m.mtxHost, resolve, m.log.With("stream", s.Name))
 
-	hctx, cancel := context.WithCancel(ctx)
-	e := &entry{handle: h, stream: s, cancel: cancel, done: make(chan struct{})}
+	hctx, cancel := context.WithCancel(m.ctx)
+	e := &entry{handle: h, stream: s, ctx: hctx, cancel: cancel, done: make(chan struct{})}
+	return e, nil
+}
 
-	m.mu.Lock()
-	m.handles[s.Name] = e
-	m.mu.Unlock()
-
+// launchLocked starts e and arranges for terminal supervisors to disappear so
+// a still-active hook heartbeat can acquire a fresh retry budget. Caller holds
+// m.mu and has already inserted e into m.handles.
+func (m *Manager) launchLocked(e *entry) {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
 		defer close(e.done)
-		h.Run(hctx)
-		m.log.Info("manager: process goroutine exited", "stream", s.Name)
+		e.handle.Run(e.ctx)
+		m.mu.Lock()
+		if m.handles[e.stream.Name] == e {
+			delete(m.handles, e.stream.Name)
+		}
+		m.mu.Unlock()
+		m.log.Info("manager: process goroutine exited", "stream", e.stream.Name)
 	}()
-	return true
 }
 
 func (m *Manager) cacheProviderVOD(ctx context.Context, s model.Stream, res *provider.Result) (string, error) {
@@ -202,7 +394,7 @@ func (m *Manager) cacheProviderVOD(ctx context.Context, s model.Stream, res *pro
 	}
 
 	started := time.Now()
-	m.log.Info("downloading provider VOD before playback", "stream", s.Name, "path", path)
+	m.log.Info("preparing provider VOD cache", "stream", s.Name, "path", path)
 	n, err := provider.DownloadToFile(ctx, res.URL, res.Headers, path)
 	if err != nil {
 		return "", err
@@ -222,19 +414,41 @@ func (m *Manager) providerCachePath(s model.Stream) string {
 	return filepath.Join(m.cacheDir, name)
 }
 
-// stop terminates the handle for name (if any) and waits for it to exit.
-func (m *Manager) stop(name string) {
+// stopAndClearDemand terminates the handle and invalidates every outstanding
+// hook lease for name.
+func (m *Manager) stopAndClearDemand(name string) {
 	m.mu.Lock()
-	e, ok := m.handles[name]
-	if ok {
-		delete(m.handles, name)
-	}
+	delete(m.demands, name)
+	e := m.takeEntryLocked(name)
 	m.mu.Unlock()
-	if !ok {
+	m.stopEntry(name, e)
+}
+
+func (m *Manager) takeEntryLocked(name string) *entry {
+	e := m.handles[name]
+	delete(m.handles, name)
+	return e
+}
+
+func (m *Manager) stopEntry(name string, e *entry) {
+	if e == nil {
 		return
 	}
 	e.cancel()
 	<-e.done
+	m.log.Info("manager: stream returned to idle", "stream", name)
+}
+
+func (m *Manager) cancelPreparation(name string) {
+	m.mu.Lock()
+	p := m.prepares[name]
+	delete(m.prepares, name)
+	m.mu.Unlock()
+	if p == nil || p.cancel == nil {
+		return
+	}
+	p.cancel()
+	<-p.done
 }
 
 func (m *Manager) pollLoop(ctx context.Context) {
@@ -247,6 +461,44 @@ func (m *Manager) pollLoop(ctx context.Context) {
 		case <-t.C:
 			m.pollOnce(ctx)
 		}
+	}
+}
+
+// leaseLoop is a fallback for abrupt MediaMTX/helper termination, where no
+// release callback can be delivered. A healthy helper refreshes every 10s.
+func (m *Manager) leaseLoop(ctx context.Context) {
+	t := time.NewTicker(pollInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			m.expireDemandLeases(now)
+		}
+	}
+}
+
+func (m *Manager) expireDemandLeases(now time.Time) {
+	var expired []*entry
+	m.mu.Lock()
+	for name, leases := range m.demands {
+		for lease, heartbeat := range leases {
+			if now.Sub(heartbeat) >= demandLeaseTTL {
+				delete(leases, lease)
+			}
+		}
+		if len(leases) == 0 {
+			delete(m.demands, name)
+			if e := m.takeEntryLocked(name); e != nil {
+				expired = append(expired, e)
+			}
+		}
+	}
+	m.mu.Unlock()
+	for _, e := range expired {
+		m.log.Warn("manager: expired stale on-demand lease", "stream", e.stream.Name)
+		m.stopEntry(e.stream.Name, e)
 	}
 }
 

@@ -7,12 +7,67 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"video-pipe/internal/mediamtx"
 	"video-pipe/internal/model"
 	"video-pipe/internal/provider"
+	"video-pipe/internal/store"
 )
+
+func TestStartKeepsEnabledStreamsIdle(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "streams.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	_, err = st.Create(context.Background(), model.Stream{
+		Name:         "idle_test",
+		SourceType:   model.SourceTest,
+		Live:         true,
+		DesiredState: model.StateRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(st, mediamtx.New("http://127.0.0.1:1", "", ""), "mediamtx", t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := m.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	got := len(m.handles)
+	m.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("startup handles = %d, want 0", got)
+	}
+	cancel()
+	m.Wait()
+}
+
+func TestExpireDemandLeasesStopsOrphanedEntry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	close(done)
+	m := &Manager{
+		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		handles: map[string]*entry{"cam": {stream: model.Stream{Name: "cam"}, cancel: cancel, done: done}},
+		demands: map[string]map[string]time.Time{"cam": {"lease": time.Now().Add(-demandLeaseTTL)}},
+	}
+	m.expireDemandLeases(time.Now())
+	if len(m.handles) != 0 || len(m.demands) != 0 {
+		t.Fatalf("expired lease was not cleaned up: handles=%d demands=%d", len(m.handles), len(m.demands))
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("expired lease did not cancel its process context")
+	}
+}
 
 func TestCacheProviderVOD_DownloadsOnceAndReusesCache(t *testing.T) {
 	var requests atomic.Int32

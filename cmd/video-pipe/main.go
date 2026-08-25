@@ -16,12 +16,22 @@ import (
 	"video-pipe/internal/config"
 	"video-pipe/internal/manager"
 	"video-pipe/internal/mediamtx"
+	"video-pipe/internal/ondemand"
 	"video-pipe/internal/server"
 	"video-pipe/internal/store"
 )
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if len(os.Args) > 1 && os.Args[1] == "on-demand-hook" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := ondemand.Run(ctx, log); err != nil {
+			log.Error("on-demand hook failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -69,10 +79,22 @@ func main() {
 		Handler:           srv,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	onDemandSrv := &http.Server{
+		Addr:              cfg.OnDemandAddr,
+		Handler:           server.NewOnDemandHandler(mgr, log),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 	go func() {
 		log.Info("video-pipe listening", "addr", cfg.Addr, "playback_host", cfg.PlaybackHost)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("http server error", "err", err)
+			os.Exit(1)
+		}
+	}()
+	go func() {
+		log.Info("on-demand callback listening", "addr", cfg.OnDemandAddr)
+		if err := onDemandSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("on-demand callback server error", "err", err)
 			os.Exit(1)
 		}
 	}()
@@ -84,6 +106,9 @@ func main() {
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Error("http shutdown error", "err", err)
+	}
+	if err := onDemandSrv.Shutdown(shutdownCtx); err != nil {
+		log.Error("on-demand callback shutdown error", "err", err)
 	}
 	mgr.Wait() // block until every ffmpeg process group has exited
 	log.Info("shutdown complete")

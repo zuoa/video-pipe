@@ -52,7 +52,13 @@ srtAddress: :8890
 
 # --- Paths -----------------------------------------------------------------
 # The catch-all lets any path name accept an external publisher (our ffmpeg
-# push) immediately, with no pre-creation and no auth. video-pipe does not need
-# to create per-stream path configs.
+# push) immediately. When the first reader requests an offline path, MediaMTX
+# launches the helper embedded in the shared image and waits for video-pipe to
+# publish it. The helper is sent SIGINT 30s after the last reader leaves; it then
+# releases the lease and video-pipe stops that path's ffmpeg process.
 paths:
   all_others:
+    runOnDemand: /app/video-pipe on-demand-hook
+    runOnDemandRestart: false
+    runOnDemandStartTimeout: 2m
+    runOnDemandCloseAfter: 30s

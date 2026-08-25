@@ -134,6 +134,8 @@ function statusInfo(s) {
   const running = s.state === "running";
   if (s.state === "error") return { label: "错误", cls: "red" };
   if (s.state === "stopped") return { label: "已停止", cls: "grey" };
+  if (s.state === "idle") return { label: "待播放", cls: "blue" };
+  if (s.state === "preparing") return { label: "下载中", cls: "blue" };
   if (s.state === "restarting") return { label: "重启中", cls: "yellow" };
   if (running && s.mtx_online) return { label: "在线", cls: "green" };
   if (running) return { label: "推流中", cls: "yellow" };
@@ -187,8 +189,8 @@ function render(streams) {
   }
   grid.innerHTML = streams
     .map((s) => {
-      const canStart = s.state === "stopped" || s.state === "error";
-      const canStop = s.state !== "stopped";
+      const canStart = s.desired_state === "stopped";
+      const canStop = s.desired_state !== "stopped";
       const name = esc(s.name);
       const st = statusInfo(s);
       const open = expanded.has(s.name);
@@ -212,11 +214,12 @@ function render(streams) {
           <dl>
             <div><dt>输入源</dt><dd class="mono" title="${esc(s.source_url)}">${esc(s.source_url || "(test pattern)")}</dd></div>
             <div><dt>重启次数</dt><dd>${s.restart_count}</dd></div>
+            ${s.last_error ? `<div><dt>错误信息</dt><dd>${esc(s.last_error)}</dd></div>` : ""}
           </dl>
           ${readerRows ? `<div class="sc-readers"><div class="sc-readers-title">观看列表</div>${readerRows}</div>` : ""}
           <div class="sc-actions">
-            <button class="mini" data-action="start" data-name="${name}" ${canStart ? "" : "disabled"}>启动</button>
-            <button class="mini" data-action="stop" data-name="${name}" ${canStop ? "" : "disabled"}>停止</button>
+            <button class="mini" data-action="start" data-name="${name}" ${canStart ? "" : "disabled"}>启用</button>
+            <button class="mini" data-action="stop" data-name="${name}" ${canStop ? "" : "disabled"}>停用</button>
             <button class="mini danger" data-action="del" data-name="${name}">删除</button>
           </div>
         </div>
@@ -329,8 +332,8 @@ form.addEventListener("submit", async (e) => {
     if (count > 1) {
       batchErr = await createBatch(payload, count);
     } else {
-      await api("POST", "/api/streams", payload);
-      toast("已创建并启动");
+      const created = await api("POST", "/api/streams", payload);
+      toast(created.state === "preparing" ? "已创建，正在下载缓存" : "已创建，等待播放");
     }
     form.reset();
     syncSourceUI();
@@ -380,7 +383,7 @@ async function createBatch(payload, count) {
     toast(`已创建 ${count - failures.length}/${count} 路`);
     return `部分创建失败：${failures.join("；")}`;
   }
-  toast(`已批量创建并启动 ${count} 路流`);
+  toast(`已批量创建 ${count} 路流，等待播放`);
   return "";
 }
 

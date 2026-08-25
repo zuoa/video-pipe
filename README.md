@@ -16,8 +16,8 @@
                           └─ mediamtx client  GET /v3/paths/get/{name} (online/readers)
 ```
 
-- 每路流由后端拉起一个 `ffmpeg` 进程，`-c copy` 无损转封装后 `rtsp://mediamtx:8554/<name>` 推给 MediaMTX。
-- MediaMTX 默认 `all_others` 即时接受 publisher，**无需预先建 path**；后端 DB 是流定义的唯一事实源。
+- 每路活跃流由后端拉起一个 `ffmpeg` 进程，`-c copy` 无损转封装后 `rtsp://mediamtx:8554/<name>` 推给 MediaMTX；没有观众时不运行 FFmpeg。
+- MediaMTX 的 `all_others.runOnDemand` 在 RTSP/RTMP/HLS/WebRTC/SRT 首个读者连接时通知后端启动；最后一个读者离开 30 秒后释放租约并停止 FFmpeg。后端 DB 仍是流定义的唯一事实源。
 - 状态灯 = ffmpeg 进程状态 + MediaMTX `online`（每 5s 轮询 `/v3/paths/get/<name>`）。
 - 看门狗：进程退出即按退避重启（`maxRestarts` 防死循环）；"活着但不出帧"（半开 TCP / 挂死摄像头）15s 内无 `progress` 心跳则杀进程重启。
 
@@ -46,7 +46,7 @@
 - 管理界面：<http://localhost:8080>
 - HLS 和 WebRTC 信令由管理服务同源转发，无需对外开放 MediaMTX 的 8888/8889 端口。
 
-**冒烟测试（无需任何外部视频源）**：打开管理界面，名称填 `demo`，类型选 `test`（地址留空），点"创建并启动"。`test` 源是一路色相循环的 H.264 测试图（颜色随时间变化，便于确认画面是"活的"），约 5 秒内状态灯变绿（在线），即可复制各协议地址到 VLC / Safari 验证：
+**冒烟测试（无需任何外部视频源）**：打开管理界面，名称填 `demo`，类型选 `test`（地址留空），点"创建并准备"。流先显示“待播放”；点击 HLS/WebRTC 播放或用 VLC 打开 RTSP 地址后才启动测试图 FFmpeg，约 5 秒内状态灯变绿（在线）：
 
 | 协议 | 地址（path=`demo`） |
 |---|---|
@@ -64,7 +64,7 @@
 
 - B站解析使用内置的纯 Go resolver（含 WBI 签名）；**斗鱼为实验性自研解析**（依赖站点的 `sign` 算法，可能随站点改版失效，需按真实房间联调）。
 - 未带登录 cookie，只能拿到公开清晰度（通常标清/流畅）；HD/会员内容暂不可用。
-- B站普通视频会先完整下载到本地持久化缓存，下载完成后才由 ffmpeg 从本地文件无限循环推流；停止流会保留缓存以便快速恢复，删除流时会同步清理缓存。B站/斗鱼直播仍直接拉流，断流时会重新解析并按退避策略重连。
+- B站普通视频创建后会立即在后台下载到持久化缓存（最多同时下载 2 路），页面依次显示“下载中”与“待播放”；缓存完成后仍不启动 FFmpeg，直到有人观看才从本地文件循环推流。停用会保留缓存，删除时同步清理。B站/斗鱼直播不预下载，首次观看时解析直链并拉流。
 - provider 视频会统一转码为 H.264 Baseline（禁用 B 帧）+ Opus，以保证 HLS/WebRTC 浏览器兼容性。这会比单纯转封装消耗更多 CPU。
 - 直播直链会过期，断流/重启时会自动重新解析。
 
@@ -91,6 +91,7 @@ Docker bridge 网络可以继续使用，无需切换 `network_mode: host`。如
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `ADDR` | `:8080` | 管理 API/UI 监听地址 |
+| `ON_DEMAND_ADDR` | `:8081` | MediaMTX 按需回调监听地址，仅容器网络使用，不要对公网发布 |
 | `DB_PATH` | `/data/video-pipe.db` | SQLite 路径（挂载到宿主 `./data`） |
 | `MEDIAMTX_API` | `http://mediamtx:9997` | MediaMTX 控制 API（容器内） |
 | `MEDIAMTX_HOST` | `mediamtx` | ffmpeg 推流目标主机（容器内） |
@@ -109,12 +110,12 @@ Docker bridge 网络可以继续使用，无需切换 `network_mode: host`。如
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET`  | `/api/streams` | 列出所有流（含状态、播放地址） |
-| `POST` | `/api/streams` | 新增并启动一路流。Body：`{name, source_url, source_type, provider?}`（`provider` 可选：`bilibili`/`douyu`，此时 `source_url` 填页面/房间地址） |
+| `POST` | `/api/streams` | 新增并启用一路按需流。Body：`{name, source_url, source_type, provider?}`（`provider` 可选：`bilibili`/`douyu`，此时 `source_url` 填页面/房间地址） |
 | `POST` | `/api/uploads` | 上传源文件（multipart `file` 字段），返回 `{path, name, size}`；`path` 可作为 `/api/streams` 的 `source_url`（落盘到 `UPLOAD_DIR`） |
 | `GET`  | `/api/streams/{name}/urls` | 返回该流各协议播放地址 |
 | `GET`  | `/api/streams/{name}/status` | 单流状态 |
-| `POST` | `/api/streams/{name}/start` | 启动一路已停止/出错的流 |
-| `POST` | `/api/streams/{name}/stop` | 停止一路流（保留配置） |
+| `POST` | `/api/streams/{name}/start` | 重新启用一路已停用的流；进入待播放，不立即启动 FFmpeg |
+| `POST` | `/api/streams/{name}/stop` | 停用一路流并立即停止 FFmpeg（保留配置和缓存） |
 | `DELETE` | `/api/streams/{name}` | 删除一路流（停进程 + 删配置） |
 
 示例：
@@ -140,7 +141,8 @@ internal/model/                Stream 领域模型 + 源类型推导
 internal/store/                SQLite 持久化 + 迁移
 internal/ffmpeg/               命令构造 + 进程托管（进程组清理、看门狗、退避重启）
 internal/mediamtx/             MediaMTX 控制 API 客户端
-internal/manager/              生命周期 + 启动恢复 + 状态聚合
+internal/manager/              按需生命周期 + B站缓存准备 + 状态聚合
+internal/ondemand/             MediaMTX 前台 helper（获取/心跳/释放观看租约）
 internal/server/               HTTP API + html/template UI（templates/、static/ 内嵌）
 mediamtx.yml                   MediaMTX 配置（开启 Control API + wrapper 鉴权）
 Dockerfile                     镜像构建（CI 用）
@@ -180,12 +182,13 @@ docker build -t video-pipe:dev .
 
 ### 验证清单
 
-- [x] `test` 源建流 → 状态灯转绿 → RTSP/HLS 在 VLC 播放
-- [ ] `start`/`stop`/`delete` 按钮工作正常
+- [x] `test` 源建流 → 待播放 → 打开 RTSP/HLS 后状态灯转绿
+- [ ] `enable`/`stop`/`delete` 操作工作正常
 - [ ] 接入一个不存在的 RTSP 地址 → 重启计数增长，超限后转红(error)
 - [ ] `kill -STOP` 某 ffmpeg 进程 → ~15s 后看门狗杀进程并重启
-- [ ] `docker compose restart video-pipe` → running 状态的流自动恢复
+- [ ] 最后一个播放器退出 30 秒后 → FFmpeg 退出、状态回到待播放
+- [ ] `docker compose restart video-pipe` → 流保持待播放；仍在线的 MediaMTX helper 心跳会重新拉起对应流
 
 ## 范围外（后续演进，见 PRD §9.6）
 
-转码/水印/AI、鉴权与多租户、按需启停（`runOnDemand`）、GB28181/ONVIF 适配、多节点/K8s、内嵌播放器预览。
+转码/水印/AI、鉴权与多租户、GB28181/ONVIF 适配、多节点/K8s。

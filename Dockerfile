@@ -1,5 +1,10 @@
 # syntax=docker/dockerfile:1
 
+# The same published image is used by both Compose services. Keeping the
+# MediaMTX binary beside video-pipe lets its scratch-compatible runOnDemand hook
+# execute our static helper without adding a shell or curl to the media server.
+FROM bluenviron/mediamtx:1 AS mediamtx
+
 # ---- build stage ----
 FROM golang:1.25-alpine AS build
 WORKDIR /src
@@ -20,6 +25,7 @@ RUN apk add --no-cache ffmpeg ca-certificates tzdata
 
 WORKDIR /app
 COPY --from=build /out/video-pipe /app/video-pipe
+COPY --from=mediamtx /mediamtx /app/mediamtx
 
-EXPOSE 8080
+EXPOSE 8080 8081
 ENTRYPOINT ["/app/video-pipe"]

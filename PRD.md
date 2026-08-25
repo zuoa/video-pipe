@@ -262,6 +262,6 @@ Stream {
 
 - 引入更多输入协议适配（SRT、GB28181网关接入）
 - 引入处理扩展点（GStreamer + appsink/appsrc，接水印/转码/AI分析）
-- 引入按需启停（MediaMTX `runOnDemand`），无人拉流自动停止转发省资源
+- 按需启停已实现：MediaMTX `runOnDemand` 唤醒后端 FFmpeg，无人拉流 30 秒后自动停止
 - 引入鉴权、多租户、操作审计
 - 大规模场景下拆分调度层为独立服务，支持多节点/K8s部署

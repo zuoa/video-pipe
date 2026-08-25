@@ -44,6 +44,13 @@ func (s *Server) toStreamOut(st model.Stream) streamOut {
 		out.RestartCount = snap.RestartCount
 		out.LastError = snap.LastError
 		out.LastHeartbeat = snap.LastHeartbeat
+	} else if prep, ok := s.mgr.PreparationSnapshot(st.Name); ok && prep.State == "preparing" {
+		out.State = string(ffmpeg.StatePreparing)
+	} else if ok && prep.State == "error" {
+		out.State = string(ffmpeg.StateError)
+		out.LastError = prep.LastError
+	} else if st.DesiredState == model.StateRunning {
+		out.State = string(ffmpeg.StateIdle)
 	} else {
 		out.State = string(ffmpeg.StateStopped)
 	}
@@ -160,9 +167,10 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err) // includes UNIQUE constraint -> maps to 409 below
 		return
 	}
-	if err := s.mgr.EnsureRunning(created); err != nil {
-		s.log.Error("start stream after create", "name", created.Name, "err", err)
-	}
+	// Creating an enabled stream no longer launches ffmpeg. Bilibili VODs are
+	// downloaded in the background; every source starts publishing only when a
+	// MediaMTX reader requests its path.
+	s.mgr.Prepare(created)
 
 	out := s.toStreamOut(created)
 	writeJSON(w, http.StatusCreated, out)
@@ -194,10 +202,11 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		notFound(w)
 		return
 	}
-	if err := s.mgr.EnsureRunning(st); err != nil {
+	if err := s.mgr.Enable(st); err != nil {
 		serverError(w, err)
 		return
 	}
+	st.DesiredState = model.StateRunning
 	writeJSON(w, http.StatusOK, s.toStreamOut(st))
 }
 

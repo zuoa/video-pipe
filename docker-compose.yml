@@ -2,13 +2,19 @@ services:
   # MediaMTX: the conversion core. Accepts our ffmpeg RTSP push and republishes
   # the same stream as RTSP/RTMP/HLS/WebRTC/SRT.
   mediamtx:
-    image: bluenviron/mediamtx:1
+    # The published video-pipe image also contains the MediaMTX binary and the
+    # on-demand callback helper required by mediamtx.yml.
+    image: ${VIDEOPIPE_IMAGE:?create .env from .env.example and set VIDEOPIPE_IMAGE}
     container_name: video-pipe-mediamtx
     restart: unless-stopped
+    pull_policy: always
+    entrypoint: ["/app/mediamtx"]
+    command: ["/mediamtx.yml"]
     # Browser HLS and WebRTC signaling are proxied by video-pipe over port 8080.
     # WebRTC media itself needs the public ICE host plus port 8189 (UDP/TCP).
     environment:
       MTX_WEBRTCADDITIONALHOSTS: "${WEBRTC_ADDITIONAL_HOSTS:-localhost}"
+      VIDEO_PIPE_ON_DEMAND_URL: "http://video-pipe:8081"
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
     ports:
@@ -31,6 +37,7 @@ services:
       - mediamtx
     environment:
       ADDR: ":8080"
+      ON_DEMAND_ADDR: ":8081"              # internal-only MediaMTX callback
       DB_PATH: "/data/video-pipe.db"
       MEDIAMTX_API: "http://mediamtx:9997"   # container-internal API base
       MEDIAMTX_HOST: "mediamtx"              # host ffmpeg pushes RTSP to

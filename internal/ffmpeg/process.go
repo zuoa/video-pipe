@@ -21,6 +21,8 @@ import (
 type State string
 
 const (
+	StateIdle       State = "idle"
+	StatePreparing  State = "preparing"
 	StateRunning    State = "running"
 	StateRestarting State = "restarting"
 	StateError      State = "error"
@@ -29,10 +31,10 @@ const (
 
 // Status is a point-in-time view of a Handle, safe to read from the API.
 type Status struct {
-	State         State     `json:"state"`
-	RestartCount  int       `json:"restart_count"`
-	LastError     string    `json:"last_error"`
-	LastHeartbeat time.Time `json:"last_heartbeat"`
+	State         State          `json:"state"`
+	RestartCount  int            `json:"restart_count"`
+	LastError     string         `json:"last_error"`
+	LastHeartbeat time.Time      `json:"last_heartbeat"`
 	MtxOnline     bool           `json:"mtx_online"`
 	Readers       int            `json:"readers"`
 	ReaderList    []model.Reader `json:"reader_list"`
