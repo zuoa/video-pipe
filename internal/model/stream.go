@@ -41,12 +41,21 @@ func IsValidProvider(p string) bool {
 	return false
 }
 
+// ReservedPathRandom is the virtual on-demand path that publishes a randomly
+// chosen enabled stream. It is not stored in SQLite and cannot be used as a
+// stream name.
+const ReservedPathRandom = "random"
+
 // nameRe constrains stream names: they become a MediaMTX path and an ffmpeg
 // output URL segment, so they must be URL-safe slugs.
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // ValidName reports whether name is an acceptable stream identifier.
 func ValidName(name string) bool { return nameRe.MatchString(name) }
+
+// IsReservedPath reports whether name is a virtual playback path that must not
+// be persisted as a user stream.
+func IsReservedPath(name string) bool { return name == ReservedPathRandom }
 
 // IsValidSourceType reports whether t is a selectable source type.
 func IsValidSourceType(t string) bool {

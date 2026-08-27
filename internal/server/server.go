@@ -68,6 +68,7 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.index)
 	mux.HandleFunc("GET /api/streams", s.listStreams)
+	mux.HandleFunc("GET /api/streams/random", s.randomStream)
 	mux.HandleFunc("POST /api/streams", s.createStream)
 	mux.HandleFunc("POST /api/uploads", s.uploadFile)
 	mux.HandleFunc("GET /api/streams/{name}/urls", s.streamURLs)

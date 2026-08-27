@@ -182,12 +182,35 @@ function readerLabel(t) {
   return labels[t] || t;
 }
 
+const RANDOM_URLS = (window.BOOT && window.BOOT.random_urls) || {};
+
+function renderRandomCard() {
+  if (!RANDOM_URLS || !Object.keys(RANDOM_URLS).length) return "";
+  const name = "random";
+  const open = expanded.has(name);
+  return `<article class="stream-card st-blue virtual">
+    <header class="sc-head">
+      <span class="sc-status"><span class="dot blue"></span>随机</span>
+      <span class="sc-name mono" title="${name}">${name}</span>
+      <span class="sc-type">虚拟入口</span>
+    </header>
+    <div class="sc-chips">${protoChips(RANDOM_URLS, name)}</div>
+    <button class="sc-toggle" data-details="${name}" aria-expanded="${open}">
+      详情 <span class="sc-caret" aria-hidden="true">▾</span>
+    </button>
+    <div class="sc-details" ${open ? "" : "hidden"}>
+      <p class="sc-note">从当前已启用的流中随机选一路。多名观众共享同一次抽取，空闲约 30 秒后下次重抽。没有已启用的流时无法播放。</p>
+    </div>
+  </article>`;
+}
+
 function render(streams) {
+  const randomCard = renderRandomCard();
   if (!streams.length) {
-    grid.innerHTML = `<div class="empty-cell">还没有流。可以先创建一路“测试画面”检查服务状态。</div>`;
+    grid.innerHTML = randomCard + `<div class="empty-cell">还没有流。可以先创建一路“测试画面”检查服务状态。</div>`;
     return;
   }
-  grid.innerHTML = streams
+  grid.innerHTML = randomCard + streams
     .map((s) => {
       const canStart = s.desired_state === "stopped";
       const canStop = s.desired_state !== "stopped";
@@ -329,6 +352,11 @@ form.addEventListener("submit", async (e) => {
   try {
     let batchErr = "";
     const count = Math.min(BATCH_MAX, Math.max(1, parseInt(countInput.value, 10) || 1));
+    if (String(payload.name || "").trim() === "random" && count === 1) {
+      formMsg.textContent = "random 是保留的取流路径，请换一个名称";
+      formMsg.className = "msg err";
+      return;
+    }
     if (count > 1) {
       batchErr = await createBatch(payload, count);
     } else {

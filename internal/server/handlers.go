@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"video-pipe/internal/ffmpeg"
+	"video-pipe/internal/manager"
 	"video-pipe/internal/model"
 	"video-pipe/internal/provider"
 	"video-pipe/internal/store"
@@ -83,9 +85,18 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	boot, err := json.Marshal(map[string]any{
+		"random_urls": playbackURLs(s.cfg.PlaybackHost, model.ReservedPathRandom, s.cfg.Enabled),
+	})
+	if err != nil {
+		s.log.Error("marshal boot config", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "index.html", map[string]any{
 		"PlaybackHost": s.cfg.PlaybackHost,
+		"BootJSON":     template.JS(boot),
 	}); err != nil {
 		s.log.Error("render index", "err", err)
 	}
@@ -121,6 +132,10 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(req.Name)
 	if !model.ValidName(name) {
 		badRequest(w, "invalid name: use lowercase letters, digits, '-' or '_' (max 64)")
+		return
+	}
+	if model.IsReservedPath(name) {
+		badRequest(w, "random is a reserved playback path")
 		return
 	}
 	prov := strings.TrimSpace(req.Provider)
@@ -176,8 +191,24 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, out)
 }
 
+func (s *Server) randomStream(w http.ResponseWriter, r *http.Request) {
+	st, err := s.mgr.PickRandom(r.Context())
+	if err != nil {
+		if errors.Is(err, manager.ErrNoEnabled) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no enabled streams"})
+			return
+		}
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.toStreamOut(st))
+}
+
 func (s *Server) streamURLs(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if rejectReservedPath(w, name) {
+		return
+	}
 	if _, err := s.store.Get(r.Context(), name); err != nil {
 		notFound(w)
 		return
@@ -187,6 +218,9 @@ func (s *Server) streamURLs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) streamStatus(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if rejectReservedPath(w, name) {
+		return
+	}
 	st, err := s.store.Get(r.Context(), name)
 	if err != nil {
 		notFound(w)
@@ -197,6 +231,9 @@ func (s *Server) streamStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if rejectReservedPath(w, name) {
+		return
+	}
 	st, err := s.store.Get(r.Context(), name)
 	if err != nil {
 		notFound(w)
@@ -212,6 +249,9 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if rejectReservedPath(w, name) {
+		return
+	}
 	if _, err := s.store.Get(r.Context(), name); err != nil {
 		notFound(w)
 		return
@@ -226,6 +266,9 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if rejectReservedPath(w, name) {
+		return
+	}
 	if err := s.mgr.Delete(name); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			notFound(w)
@@ -344,6 +387,14 @@ func decodeJSON(r *http.Request, v any) error {
 
 func badRequest(w http.ResponseWriter, msg string) {
 	writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+}
+
+func rejectReservedPath(w http.ResponseWriter, name string) bool {
+	if !model.IsReservedPath(name) {
+		return false
+	}
+	badRequest(w, "random is a reserved playback path")
+	return true
 }
 
 func notFound(w http.ResponseWriter) {

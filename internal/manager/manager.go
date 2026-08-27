@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"sync"
@@ -36,6 +37,9 @@ var (
 	// ErrPreparing means that a cached provider source is still being prepared.
 	// The hook should retry while MediaMTX keeps the reader waiting.
 	ErrPreparing = errors.New("stream source is preparing")
+	// ErrNoEnabled means the reserved random path was requested but no stream
+	// is currently enabled for playback.
+	ErrNoEnabled = errors.New("no enabled streams")
 )
 
 // Manager coordinates stream processes.
@@ -54,6 +58,9 @@ type Manager struct {
 	prepares     map[string]*prepareEntry
 	prepareSlots chan struct{}
 	wg           sync.WaitGroup
+
+	// randN picks an index in [0, n). Tests replace it; nil means rand.IntN.
+	randN func(n int) int
 }
 
 type entry struct {
@@ -90,6 +97,7 @@ func New(st *store.Store, mtx *mediamtx.Client, mtxHost, cacheDir string, log *s
 		demands:      make(map[string]map[string]time.Time),
 		prepares:     make(map[string]*prepareEntry),
 		prepareSlots: make(chan struct{}, prepareConcurrency),
+		randN:        rand.IntN,
 	}
 }
 
@@ -165,21 +173,35 @@ func (m *Manager) Delete(name string) error {
 // AcquireDemand records one MediaMTX runOnDemand command as a lease and starts
 // the stream if this is its first reader. Re-acquiring the same lease is
 // idempotent, which lets the hook heartbeat recover after a backend restart.
+// The reserved path "random" publishes a newly chosen enabled stream onto that
+// path; subsequent heartbeats keep the same backing source until the last
+// reader leaves.
 func (m *Manager) AcquireDemand(name, lease string) error {
 	if !model.ValidName(name) || lease == "" {
 		return fmt.Errorf("invalid demand lease")
 	}
-	s, err := m.store.Get(m.ctx, name)
+
+	m.mu.Lock()
+	if _, ok := m.handles[name]; ok {
+		leases := m.demands[name]
+		if leases == nil {
+			leases = make(map[string]time.Time)
+			m.demands[name] = leases
+		}
+		leases[lease] = time.Now()
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+
+	s, err := m.resolveDemandSource(name)
 	if err != nil {
 		return err
-	}
-	if s.DesiredState != model.StateRunning {
-		return ErrDisabled
 	}
 
 	if s.Provider == "bilibili" && provider.IsBilibiliVODURL(s.SourceURL) {
 		m.Prepare(s)
-		prep, ok := m.PreparationSnapshot(name)
+		prep, ok := m.PreparationSnapshot(s.Name)
 		if !ok || prep.State != "ready" {
 			return ErrPreparing
 		}
@@ -196,7 +218,7 @@ func (m *Manager) AcquireDemand(name, lease string) error {
 	if _, ok := m.handles[name]; ok {
 		return nil
 	}
-	e, err := m.newEntry(s)
+	e, err := m.newEntryAs(name, s)
 	if err != nil {
 		delete(leases, lease)
 		if len(leases) == 0 {
@@ -206,8 +228,55 @@ func (m *Manager) AcquireDemand(name, lease string) error {
 	}
 	m.handles[name] = e
 	m.launchLocked(e)
-	m.log.Info("manager: stream activated on demand", "stream", name)
+	if name == model.ReservedPathRandom {
+		m.log.Info("manager: stream activated on demand", "stream", name, "source_stream", s.Name)
+	} else {
+		m.log.Info("manager: stream activated on demand", "stream", name)
+	}
 	return nil
+}
+
+// PickRandom returns one uniformly chosen stream that is currently enabled for
+// on-demand playback. Stopped streams and the reserved random path itself are
+// excluded. An empty pool yields ErrNoEnabled.
+func (m *Manager) PickRandom(ctx context.Context) (model.Stream, error) {
+	streams, err := m.store.List(ctx)
+	if err != nil {
+		return model.Stream{}, err
+	}
+	enabled := enabledForRandom(streams)
+	if len(enabled) == 0 {
+		return model.Stream{}, ErrNoEnabled
+	}
+	pick := m.randN
+	if pick == nil {
+		pick = rand.IntN
+	}
+	return enabled[pick(len(enabled))], nil
+}
+
+func enabledForRandom(streams []model.Stream) []model.Stream {
+	out := make([]model.Stream, 0, len(streams))
+	for _, s := range streams {
+		if s.DesiredState == model.StateRunning && !model.IsReservedPath(s.Name) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (m *Manager) resolveDemandSource(name string) (model.Stream, error) {
+	if name == model.ReservedPathRandom {
+		return m.PickRandom(m.ctx)
+	}
+	s, err := m.store.Get(m.ctx, name)
+	if err != nil {
+		return model.Stream{}, err
+	}
+	if s.DesiredState != model.StateRunning {
+		return model.Stream{}, ErrDisabled
+	}
+	return s, nil
 }
 
 // ReleaseDemand drops one reader lease. The last release stops ffmpeg but
@@ -338,34 +407,49 @@ func (m *Manager) finishPreparation(name string, p *prepareEntry, err error) {
 
 // newEntry creates a not-yet-launched ffmpeg supervisor. Caller holds m.mu.
 func (m *Manager) newEntry(s model.Stream) (*entry, error) {
-	// For provider sources, build a resolver that refreshes the CDN URL before
-	// every (re)start. Direct sources pass nil (they use s.SourceURL directly).
-	var resolve ffmpeg.Resolver
+	return m.newEntryAs(s.Name, s)
+}
+
+// newEntryAs publishes s's source onto MediaMTX path publishName. Resolver and
+// provider-cache paths stay keyed by the original stream so an alias such as
+// "random" reuses an already-downloaded VOD instead of fetching a second copy.
+func (m *Manager) newEntryAs(publishName string, s model.Stream) (*entry, error) {
+	resolve, err := m.resolverFor(s)
+	if err != nil {
+		return nil, err
+	}
+
+	pub := s
+	pub.Name = publishName
+	h := ffmpeg.NewHandle(publishName, pub, m.mtxHost, resolve, m.log.With("stream", publishName))
+
+	hctx, cancel := context.WithCancel(m.ctx)
+	e := &entry{handle: h, stream: pub, ctx: hctx, cancel: cancel, done: make(chan struct{})}
+	return e, nil
+}
+
+func (m *Manager) resolverFor(s model.Stream) (ffmpeg.Resolver, error) {
 	if s.Provider == "bilibili" && provider.IsBilibiliVODURL(s.SourceURL) {
 		cachePath := m.providerCachePath(s)
-		resolve = func(context.Context) (string, map[string]string, bool, error) {
+		return func(context.Context) (string, map[string]string, bool, error) {
 			return cachePath, nil, false, nil
-		}
-	} else if s.Provider != "" {
+		}, nil
+	}
+	if s.Provider != "" {
 		r, ok := provider.Get(s.Provider)
 		if !ok {
 			return nil, fmt.Errorf("unknown provider %q", s.Provider)
 		}
 		pageURL := s.SourceURL
-		resolve = func(c context.Context) (string, map[string]string, bool, error) {
+		return func(c context.Context) (string, map[string]string, bool, error) {
 			res, err := r.Resolve(c, pageURL)
 			if err != nil {
 				return "", nil, false, err
 			}
 			return res.URL, res.Headers, res.Live, nil
-		}
+		}, nil
 	}
-
-	h := ffmpeg.NewHandle(s.Name, s, m.mtxHost, resolve, m.log.With("stream", s.Name))
-
-	hctx, cancel := context.WithCancel(m.ctx)
-	e := &entry{handle: h, stream: s, ctx: hctx, cancel: cancel, done: make(chan struct{})}
-	return e, nil
+	return nil, nil
 }
 
 // launchLocked starts e and arranges for terminal supervisors to disappear so

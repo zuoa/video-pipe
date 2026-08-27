@@ -58,6 +58,8 @@
 
 > 没有 FLV：MediaMTX 不输出 FLV，以上 5 种即全部；浏览器播放用 HLS 或 WebRTC。HLS/WebRTC 自动使用当前管理页的 HTTP(S) 域名；`PLAYBACK_HOST` 只用于生成 RTSP/RTMP/SRT 这些原生客户端地址。
 
+**随机取流**：`random` 是保留 path，不是一路可创建的流。播放 `rtsp://localhost:8554/random`（或 HLS `/playback/hls/random/index.m3u8` 等）会从当前已启用的流中均匀随机选一路，并把该源推到 path `random`。同一轮观众共享这次抽取；最后一位离开约 30 秒后下次重抽。没有已启用的流时播放失败。`random` 不能用作流名称。若要每个播放器各自落到不同的具名流（例如压测批量创建的 N 路），先 `GET /api/streams/random` 再连接返回的 URL。
+
 接入真实摄像头：输入类型选“自动识别”或“RTSP”，地址填 `rtsp://user:pass@ip:554/...`。本地文件：输入类型选“本地文件”后，页面才会显示“选择视频文件”按钮；文件会上传到挂载的 `./data/uploads/`，无需手填路径。
 
 **视频/直播站点（provider）**：输入类型直接选 `B站`，地址填 B站视频页（`https://www.bilibili.com/video/BV…`）或直播间（`https://live.bilibili.com/<房间>`）；选 `斗鱼（实验）` 时，地址填 `https://www.douyu.com/<房间号>`。页面不再单独展示“来源”字段，后端仍会自动把页面/房间地址解析成 CDN 直链再转封装：
@@ -110,7 +112,8 @@ Docker bridge 网络可以继续使用，无需切换 `network_mode: host`。如
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET`  | `/api/streams` | 列出所有流（含状态、播放地址） |
-| `POST` | `/api/streams` | 新增并启用一路按需流。Body：`{name, source_url, source_type, provider?}`（`provider` 可选：`bilibili`/`douyu`，此时 `source_url` 填页面/房间地址） |
+| `GET`  | `/api/streams/random` | 从已启用的流中随机返回一路（含状态、播放地址）。没有启用流时 404 |
+| `POST` | `/api/streams` | 新增并启用一路按需流。Body：`{name, source_url, source_type, provider?}`（`provider` 可选：`bilibili`/`douyu`，此时 `source_url` 填页面/房间地址）。名称不能为 `random` |
 | `POST` | `/api/uploads` | 上传源文件（multipart `file` 字段），返回 `{path, name, size}`；`path` 可作为 `/api/streams` 的 `source_url`（落盘到 `UPLOAD_DIR`） |
 | `GET`  | `/api/streams/{name}/urls` | 返回该流各协议播放地址 |
 | `GET`  | `/api/streams/{name}/status` | 单流状态 |
@@ -128,6 +131,9 @@ curl -X POST localhost:8080/api/streams \
 
 # 查看状态
 curl localhost:8080/api/streams
+
+# 随机抽一路已启用的流
+curl localhost:8080/api/streams/random
 ```
 
 `source_type` 可选：`auto`（按 URL scheme 推导）/ `file` / `rtsp` / `rtmp` / `http` / `test`。`file` 源会以实时速率（`-re`）推送；其余视为直播源（异常退出会自动重启）。

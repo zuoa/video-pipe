@@ -114,6 +114,15 @@ func TestBuildArgs_MapsSingleVideoAndAudio(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_PublishesToStreamName(t *testing.T) {
+	s := stream(model.SourceTest, "")
+	s.Name = "random"
+	args := BuildArgs(s, "mediamtx", "", nil)
+	if !strings.Contains(strings.Join(args, " "), "rtsp://mediamtx:8554/random") {
+		t.Fatalf("output path missing random: %v", args)
+	}
+}
+
 func TestBuildArgs_TestSourceEncodesToH264(t *testing.T) {
 	args := BuildArgs(stream(model.SourceTest, ""), "mediamtx", "", nil)
 	joined := strings.Join(args, " ")

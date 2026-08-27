@@ -33,6 +33,8 @@ func NewOnDemandHandler(mgr *manager.Manager, log *slog.Logger) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(err, store.ErrNotFound):
 			http.Error(w, "stream not found", http.StatusNotFound)
+		case errors.Is(err, manager.ErrNoEnabled):
+			http.Error(w, "no enabled streams", http.StatusNotFound)
 		case errors.Is(err, manager.ErrDisabled):
 			http.Error(w, "stream is disabled", http.StatusConflict)
 		case errors.Is(err, manager.ErrPreparing):

@@ -408,6 +408,20 @@ button:disabled {
 
 .stream-card:hover { border-color: #2e3a4d; }
 
+.stream-card.virtual {
+	border-style: dashed;
+	background:
+		linear-gradient(145deg, rgba(88, 166, 255, 0.07), transparent 42%),
+		var(--panel-raised);
+}
+
+.sc-note {
+	margin: 0;
+	color: var(--muted);
+	font-size: 12px;
+	line-height: 1.55;
+}
+
 /* Status accent on the left edge. */
 .stream-card.st-green { border-left-color: var(--green); }
 .stream-card.st-blue { border-left-color: #4f8cff; }
